@@ -5,7 +5,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
-#include "../libx264/common/x264.h"
+#include "./common/x264.h"
 #include "input.h"
 #include "output.h"
 
