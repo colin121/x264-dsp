@@ -1,0 +1,1757 @@
+;* ================================================================================================ *;
+;*  predict-a.sa: intra prediction for TI C6000 DSP                                                 *;
+;*                                                                                                  *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*  | cpu cost table of intra prediction on DM6467 simulator                                   |    *;
+;*  |------------------------------------------------------------------------------------------|    *;
+;*  | Function         | Optimized cost (cycles) | Pure C cost (cycles)    | Result            |    *;
+;*  |                  |-------------------------|-------------------------|-------------------|    *;
+;*  |                  | Debug      | Release    | Debug      | Release    | Debug   | Release |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | 16x16_v          | 49         | 37         | 847        | 46         | 17.2    |  1.2    |    *;
+;*  | 16x16_h          | 169        | 52         | 1043       | 173        |  6.1    |  3.3 *  |    *;
+;*  | 16x16_dc         | 173        | 62         | 1306       | 88         |  7.5    |  1.4    |    *;
+;*  | 16x16_dc_left    | 141        | 60         | 1098       | 64         |  7.7    |  1.0    |    *;
+;*  | 16x16_dc_top     | 75         | 50         | 1066       | 74         | 14.2    |  1.4    |    *;
+;*  | 16x16_dc_128     | 42         | 35         | 609        | 44         | 14.5    |  1.2    |    *;
+;*  | 16x16_p          | 662        | 148        | 16545      | 388        | 25.0 *  |  2.6 *  |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | 8x8c_dc          | 95         | 27         | 646        | 44         |  6.8    |  1.6    |    *;
+;*  | 8x8c_dc_left     | 72         | 25         | 503        | 38         |  6.9    |  1.5    |    *;
+;*  | 8x8c_dc_top      | 37         | 22         | 482        | 36         | 13.0    |  1.6    |    *;
+;*  | 8x8c_dc_128      | 17         | 11         | 282        | 19         | 16.5    |  1.7    |    *;
+;*  | 8x8c_h           | 80         | 18         | 410        | 88         |  5.1    |  4.8 *  |    *;
+;*  | 8x8c_v           | 19         | 13         | 312        | 20         | 16.4    |  1.5    |    *;
+;*  | 8x8c_p           | 262        | 68         | 4389       | 136        | 16.7 *  |  2.0 *  |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | 4x4_v            | 15         | 9          | 34         | 9          |  2.2    |  1.0    |    *;
+;*  | 4x4_h            | 40         | 12         | 65         | 15         |  1.6    |  1.2 *  |    *;
+;*  | 4x4_dc           | 51         | 21         | 56         | 25         |  1.0    |  1.1    |    *;
+;*  | 4x4_dc_left      | 39         | 18         | 50         | 20         |  1.2    |  1.1    |    *;
+;*  | 4x4_dc_top       | 25         | 17         | 49         | 19         |  1.9    |  1.1    |    *;
+;*  | 4x4_dc_128       | 12         | 6          | 30         | 6          |  2.5    |  1.0    |    *;
+;*  | 4x4_ddl          | 51         | 21         | 191        | 33         |  3.7    |  1.5 *  |    *;
+;*  | 4x4_ddr          | 79         | 23         | 198        | 26         |  2.5    |  1.1 *  |    *;
+;*  | 4x4_vr           | 69         | 20         | 223        | 31         |  3.2    |  1.5 *  |    *;
+;*  | 4x4_hd           | 71         | 23         | 223        | 31         |  3.1    |  1.3 *  |    *;
+;*  | 4x4_vl           | 47         | 19         | 213        | 31         |  4.5    |  1.6 *  |    *;
+;*  | 4x4_hu           | 58         | 21         | 162        | 20         |  2.7    |  1.0 x  |    *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*                                                                                                  *;
+;* ================================================================================================ *;
+
+;* ======================================================================== *;
+;* x264_predict_16x16_v_ti -- 16x16 vertical predict mode.                  *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+		.sect ".text:_x264_predict_16x16_v_ti"
+        .global _x264_predict_16x16_v_ti
+_x264_predict_16x16_v_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            pix_up
+
+            ADD             pix,        8,          pix_up  ; pix_up = pix + 8
+            LDNDW           *-pix[4],    pix_7654:pix_3210  ; load lower 8 bytes of horizontal
+            LDNDW           *-pix_up[4], pix_FEDC:pix_BA98  ; load upper 8 bytes of horizontal
+
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 1
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 2
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 3
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 4
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 5
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 6
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 7
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 8
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 9
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 10
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 11
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 12
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 13
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 14
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 15
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 16
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes of line 16
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_16x16_h_ti -- 16x16 horizontal predict mode.                *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+		.sect ".text:_x264_predict_16x16_h_ti"
+        .global _x264_predict_16x16_h_ti
+_x264_predict_16x16_h_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210
+            .reg            pix_1_7654:pix_1_3210
+            .reg            pix_2_7654:pix_2_3210
+            .reg            pix_3_7654:pix_3_3210
+            .reg            v_0, v_1, v_2, v_3
+			.reg            pix_lf, pix_up, pix_1x
+
+			ADD             pix,        8,          pix_up ; pix_up = pix + 8
+			SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+			MVK             32,         pix_1x             ; pix_1x = 32 (FEDC_STRIDE / 1)
+
+            ; load vertical pixel (0, 1, 2, 3)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_0,        v_0,        v_0
+            PACK2           v_1,        v_1,        v_1
+            PACK2           v_2,        v_2,        v_2
+            PACK2           v_3,        v_3,        v_3
+            PACKL4          v_0,        v_0,        pix_0_3210
+            PACKL4          v_1,        v_1,        pix_1_3210
+            PACKL4          v_2,        v_2,        pix_2_3210
+            PACKL4          v_3,        v_3,        pix_3_3210
+            MV              pix_0_3210, pix_0_7654
+            MV              pix_1_3210, pix_1_7654
+            MV              pix_2_3210, pix_2_7654
+            MV              pix_3_3210, pix_3_7654
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4]    ; store lower 8 bytes of line 1
+            STNDW           pix_0_7654:pix_0_3210, *pix_up++[4] ; store upper 8 bytes of line 1
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4]    ; store lower 8 bytes of line 2
+            STNDW           pix_1_7654:pix_1_3210, *pix_up++[4] ; store upper 8 bytes of line 2
+            STNDW           pix_2_7654:pix_2_3210, *pix++[4]    ; store lower 8 bytes of line 3
+            STNDW           pix_2_7654:pix_2_3210, *pix_up++[4] ; store upper 8 bytes of line 3
+            STNDW           pix_3_7654:pix_3_3210, *pix++[4]    ; store lower 8 bytes of line 4
+            STNDW           pix_3_7654:pix_3_3210, *pix_up++[4] ; store upper 8 bytes of line 4
+            ; load vertical pixel (4, 5, 6, 7)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_0,        v_0,        v_0
+            PACK2           v_1,        v_1,        v_1
+            PACK2           v_2,        v_2,        v_2
+            PACK2           v_3,        v_3,        v_3
+            PACKL4          v_0,        v_0,        pix_0_3210
+            PACKL4          v_1,        v_1,        pix_1_3210
+            PACKL4          v_2,        v_2,        pix_2_3210
+            PACKL4          v_3,        v_3,        pix_3_3210
+            MV              pix_0_3210, pix_0_7654
+            MV              pix_1_3210, pix_1_7654
+            MV              pix_2_3210, pix_2_7654
+            MV              pix_3_3210, pix_3_7654
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4]    ; store lower 8 bytes of line 5
+            STNDW           pix_0_7654:pix_0_3210, *pix_up++[4] ; store upper 8 bytes of line 5
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4]    ; store lower 8 bytes of line 6
+            STNDW           pix_1_7654:pix_1_3210, *pix_up++[4] ; store upper 8 bytes of line 6
+            STNDW           pix_2_7654:pix_2_3210, *pix++[4]    ; store lower 8 bytes of line 7
+            STNDW           pix_2_7654:pix_2_3210, *pix_up++[4] ; store upper 8 bytes of line 7
+            STNDW           pix_3_7654:pix_3_3210, *pix++[4]    ; store lower 8 bytes of line 8
+            STNDW           pix_3_7654:pix_3_3210, *pix_up++[4] ; store upper 8 bytes of line 8
+            ; load vertical pixel (8, 9, A, B)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_0,        v_0,        v_0
+            PACK2           v_1,        v_1,        v_1
+            PACK2           v_2,        v_2,        v_2
+            PACK2           v_3,        v_3,        v_3
+            PACKL4          v_0,        v_0,        pix_0_3210
+            PACKL4          v_1,        v_1,        pix_1_3210
+            PACKL4          v_2,        v_2,        pix_2_3210
+            PACKL4          v_3,        v_3,        pix_3_3210
+            MV              pix_0_3210, pix_0_7654
+            MV              pix_1_3210, pix_1_7654
+            MV              pix_2_3210, pix_2_7654
+            MV              pix_3_3210, pix_3_7654
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4]    ; store lower 8 bytes of line 9
+            STNDW           pix_0_7654:pix_0_3210, *pix_up++[4] ; store upper 8 bytes of line 9
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4]    ; store lower 8 bytes of line 10
+            STNDW           pix_1_7654:pix_1_3210, *pix_up++[4] ; store upper 8 bytes of line 10
+            STNDW           pix_2_7654:pix_2_3210, *pix++[4]    ; store lower 8 bytes of line 11
+            STNDW           pix_2_7654:pix_2_3210, *pix_up++[4] ; store upper 8 bytes of line 11
+            STNDW           pix_3_7654:pix_3_3210, *pix++[4]    ; store lower 8 bytes of line 12
+            STNDW           pix_3_7654:pix_3_3210, *pix_up++[4] ; store upper 8 bytes of line 12
+            ; load vertical pixel (C, D, E, F)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_0,        v_0,        v_0
+            PACK2           v_1,        v_1,        v_1
+            PACK2           v_2,        v_2,        v_2
+            PACK2           v_3,        v_3,        v_3
+            PACKL4          v_0,        v_0,        pix_0_3210
+            PACKL4          v_1,        v_1,        pix_1_3210
+            PACKL4          v_2,        v_2,        pix_2_3210
+            PACKL4          v_3,        v_3,        pix_3_3210
+            MV              pix_0_3210, pix_0_7654
+            MV              pix_1_3210, pix_1_7654
+            MV              pix_2_3210, pix_2_7654
+            MV              pix_3_3210, pix_3_7654
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4]    ; store lower 8 bytes of line 13
+            STNDW           pix_0_7654:pix_0_3210, *pix_up++[4] ; store upper 8 bytes of line 13
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4]    ; store lower 8 bytes of line 14
+            STNDW           pix_1_7654:pix_1_3210, *pix_up++[4] ; store upper 8 bytes of line 14
+            STNDW           pix_2_7654:pix_2_3210, *pix++[4]    ; store lower 8 bytes of line 15
+            STNDW           pix_2_7654:pix_2_3210, *pix_up++[4] ; store upper 8 bytes of line 15
+            STNDW           pix_3_7654:pix_3_3210, *pix++[4]    ; store lower 8 bytes of line 16
+            STNDW           pix_3_7654:pix_3_3210, *pix_up++[4] ; store upper 8 bytes of line 16
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_16x16_p_ti -- 16x16 plane predict mode.                     *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* NOTE: pixels are loaded from base address minus one,                     *;
+;*       so it's not 4-bytes or 8-bytes aligned.                            *;
+;* ======================================================================== *;
+		.sect ".text:_x264_predict_16x16_p_ti"
+        .global _x264_predict_16x16_p_ti
+_x264_predict_16x16_p_ti .cproc pix
+            .no_mdep
+
+            .reg            H, V
+            .reg            a, b, c, b_2x, b_4x
+            .reg            h_FEDC:h_BA98
+            .reg            h_6543:h_210X ; ignore 7th pixel of horizontal
+            .reg            v_FEDC:v_BA98
+            .reg            v_6543:v_210X ; ignore 7th pixel of vertical
+            .reg            v_0, v_1, v_2, v_3, v_32, v_10
+            .reg            dotp_1, dotp_2, dotp_3, dotp_4
+            .reg            k_1234, k_5678
+            .reg            k_4321, k_8765
+            .reg            k_32
+
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            pix_FE, pix_DC, pix_BA, pix_98
+            .reg            pix_76, pix_54, pix_32, pix_10
+            .reg            pix_up, pix_lf
+            .reg            pix_1x, pix_2y
+            .reg            i0, i1, i
+
+            MVKL            0x01020304, k_1234
+            MVKH            0x01020304, k_1234             ; k_1234 = 0x01020304
+            MVKL            0x05060708, k_5678
+            MVKH            0x05060708, k_5678             ; k_5678 = 0x05060708
+            MVKL            0x04030201, k_4321
+            MVKH            0x04030201, k_4321             ; k_4321 = 0x04030201
+            MVKL            0x08070605, k_8765
+            MVKH            0x08070605, k_8765             ; k_8765 = 0x08070605
+            MVK             32,         k_32               ; k_32   = 32
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            MVK             64,         pix_2y             ; pix_2y = 64 (FDEC_STRIDE * 2)
+            SUB             pix,        24,         pix_up ; pix_up = pix - FDEC_STRIDE + 8
+            SUB             pix_up,     9,          pix_lf ; pix_lf = pix - FDEC_STRIDE - 1
+
+            ; load horizontal pixels
+            LDNDW           *pix_lf,      h_6543:h_210X
+            LDNDW           *pix_up++[4], h_FEDC:h_BA98
+            ; load vertical pixels (-1, 0, 1, 2)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_1,        v_0,        v_10
+            PACK2           v_3,        v_2,        v_32
+            PACKL4          v_32,       v_10,       v_210X
+            ; load vertical pixels (3, 4, 5, 6)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_2y], v_3 ; skip 7th pixel
+            PACK2           v_1,        v_0,        v_10
+            PACK2           v_3,        v_2,        v_32
+            PACKL4          v_32,       v_10,       v_6543
+            ; load vertical pixels (8, 9, 10, 11)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_1,        v_0,        v_10
+            PACK2           v_3,        v_2,        v_32
+            PACKL4          v_32,       v_10,       v_BA98
+            ; load vertical pixels (12, 13, 14, 15)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_1,        v_0,        v_10
+            PACK2           v_3,        v_2,        v_32
+            PACKL4          v_32,       v_10,       v_FEDC
+
+            ; calculate H and V
+            DOTPU4          h_BA98,     k_4321,     dotp_1 ; dotp_1 = 4*h[B]+3*h[A]+2*h[9]+1*h[8]
+            DOTPU4          h_FEDC,     k_8765,     dotp_2 ; dotp_2 = 8*h[F]+7*h[E]+6*h[D]+5*h[C]
+            DOTPU4          h_6543,     k_1234,     dotp_3 ; dotp_3 = 1*h[6]+2*h[5]+3*h[4]+4*h[3]
+            DOTPU4          h_210X,     k_5678,     dotp_4 ; dotp_4 = 5*h[2]+6*h[1]+7*h[0]+8*h[-1]
+            ADD             dotp_1,     dotp_2,     dotp_1
+            ADD             dotp_3,     dotp_4,     dotp_3
+            SUB             dotp_1,     dotp_3,     H      ; H = (dotp_1 + dotp_2) - (dotp_3 + dotp_4)
+
+            DOTPU4          v_BA98,     k_4321,     dotp_1 ; dotp_1 = 4*v[B]+3*v[A]+2*v[9]+1*v[8]
+            DOTPU4          v_FEDC,     k_8765,     dotp_2 ; dotp_2 = 8*v[F]+7*v[E]+6*v[D]+5*v[C]
+            DOTPU4          v_6543,     k_1234,     dotp_3 ; dotp_3 = 1*v[6]+2*v[5]+3*v[4]+4*v[3]
+            DOTPU4          v_210X,     k_5678,     dotp_4 ; dotp_4 = 5*v[2]+6*v[1]+7*v[0]+8*v[-1]
+            ADD             dotp_1,     dotp_2,     dotp_1
+            ADD             dotp_3,     dotp_4,     dotp_3
+            SUB             dotp_1,     dotp_3,     V      ; V = (dotp_1 + dotp_2) - (dotp_3 + dotp_4)
+
+            ; calcualte a, b and c
+            MPY             5,          H,          b
+            MPY             5,          V,          c
+            ADD             k_32,       b,          b
+            ADD             k_32,       c,          c
+            SHR             b,          6,          b ; b = ( 5 * H + 32 ) >> 6
+            SHR             c,          6,          c ; c = ( 5 * V + 32 ) >> 6
+            SHRU            h_FEDC,     24,         a ; SHRU to get 4th byte: h_F
+            ADD             v_3,        a,          a ; v_F == v_3
+            SHL             a,          4,          a ; a = (h_F + v_F) << 4
+            ADD             b,          b,          b_2x
+            ADD             b_2x,       b_2x,       b_4x
+            PACK2           b_2x,       b_2x,       b_2x
+            PACK2           b_4x,       b_4x,       b_4x
+
+            ; calculate i0
+            ADD             b,          c,          i0
+            MPY             7,          i0,         i0
+            SUB             a,          i0,         i0
+            ADD             16,         i0,         i0 ; i0 = a - b * 7 - c * 7 + 16
+            MVK             15,         i              ; i = 15
+
+loop_predict_16x16_p: .trip 16,         16,         16  ; loop count
+
+            ADD             i0,         b,          i1 ; i1 = i0 + b
+            PACK2           i1,         i0,         pix_10
+            ADD             i0,         c,          i0 ; i0 += c for next time
+
+            ADD2            pix_10,     b_2x,       pix_32
+            ADD2            pix_10,     b_4x,       pix_54
+            ADD2            pix_54,     b_2x,       pix_76
+            ADD2            pix_54,     b_4x,       pix_98
+            ADD2            pix_98,     b_2x,       pix_BA
+            ADD2            pix_98,     b_4x,       pix_DC
+            ADD2            pix_DC,     b_2x,       pix_FE
+
+            SHR2            pix_10,     5,          pix_10
+            SHR2            pix_32,     5,          pix_32
+            SHR2            pix_54,     5,          pix_54
+            SHR2            pix_76,     5,          pix_76
+            SHR2            pix_98,     5,          pix_98
+            SHR2            pix_BA,     5,          pix_BA
+            SHR2            pix_DC,     5,          pix_DC
+            SHR2            pix_FE,     5,          pix_FE
+
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_BA,     pix_98,     pix_BA98
+            SPACKU4         pix_FE,     pix_DC,     pix_FEDC
+
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes
+            STNDW           pix_FEDC:pix_BA98, *pix_up++[4] ; store upper 8 bytes
+
+   [i]      BDEC            loop_predict_16x16_p, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_16x16_dc_ti -- 16x16 dc predict mode.                       *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_16x16_dc_ti"
+        .global _x264_predict_16x16_dc_ti
+_x264_predict_16x16_dc_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            v_0, v_1, v_2, v_3
+            .reg            dotp_1, dotp_2, dotp_3, dotp_4
+            .reg            pix_lf, pix_up, pix_1x, k_1
+            .reg            dc, dc_0, dc_1
+
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1                ; k_1    = 0x01010101
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            ADD             pix,        8,          pix_up ; pix_up = pix + 8
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            ; load horizontal pixels
+            LDNDW           *-pix[4],    pix_7654:pix_3210
+            LDNDW           *-pix_up[4], pix_FEDC:pix_BA98
+            DOTPU4          pix_3210,   k_1,        dotp_1 ; h[3] + h[2] + h[1] + h[0]
+            DOTPU4          pix_7654,   k_1,        dotp_2 ; h[7] + h[6] + h[5] + h[4]
+            DOTPU4          pix_BA98,   k_1,        dotp_3 ; h[B] + h[A] + h[9] + h[8]
+            DOTPU4          pix_FEDC,   k_1,        dotp_4 ; h[F] + h[E] + h[D] + h[C]
+            ADD             dotp_1,     dotp_2,     dc_0
+            ADD             dotp_3,     dotp_4,     dc_1
+            ; load vertical pixels (0, 1, 2, 3)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc_0,       v_0,        dc_0
+            ADD             dc_1,       v_1,        dc_1
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_1,       v_3,        dc_1
+            ; load vertical pixels (4, 5, 6, 7)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc_0,       v_0,        dc_0
+            ADD             dc_1,       v_1,        dc_1
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_1,       v_3,        dc_1
+            ; load vertical pixels (8, 9, A, B)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc_0,       v_0,        dc_0
+            ADD             dc_1,       v_1,        dc_1
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_1,       v_3,        dc_1
+            ; load vertical pixels (C, D, E, F)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc_0,       v_0,        dc_0
+            ADD             dc_1,       v_1,        dc_1
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_1,       v_3,        dc_1
+            ; calculate dc
+            ADD             dc_0,       dc_1,       dc
+            ADD             dc,         16,         dc
+            SHR             dc,         5,          dc ; ( dc + 16 ) >> 5
+            PACK2           dc,         dc,         dc
+            SPACKU4         dc,         dc,         pix_3210
+            MV              pix_3210,   pix_7654
+
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 16
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 16
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_16x16_dc_left_ti -- 16x16 dc left predict mode.             *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_16x16_dc_left_ti"
+        .global _x264_predict_16x16_dc_left_ti
+_x264_predict_16x16_dc_left_ti .cproc pix
+            .no_mdep
+
+            .reg        pix_7654:pix_3210
+            .reg        v_0, v_1, v_2, v_3
+            .reg        pix_lf, pix_up, pix_1x
+            .reg        dc, dc_0, dc_1
+
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            ADD             pix,        8,          pix_up ; pix_up = pix + 8
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            ; load vertical pixels (0, 1, 2, 3)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             v_0,        v_1,        dc_0
+            ADD             v_2,        v_3,        dc_1
+            ; load vertical pixels (4, 5, 6, 7)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc_0,       v_0,        dc_0
+            ADD             dc_1,       v_1,        dc_1
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_1,       v_3,        dc_1
+            ; load vertical pixels (8, 9, A, B)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc_0,       v_0,        dc_0
+            ADD             dc_1,       v_1,        dc_1
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_1,       v_3,        dc_1
+            ; load vertical pixels (C, D, E, F)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc_0,       v_0,        dc_0
+            ADD             dc_1,       v_1,        dc_1
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_1,       v_3,        dc_1
+            ; calculate dc
+            ADD             dc_0,       dc_1,       dc
+            ADD             dc,         8,          dc
+            SHR             dc,         4,          dc ; ( dc + 8 ) >> 4
+            PACK2           dc,         dc,         dc
+            SPACKU4         dc,         dc,         pix_3210
+            MV              pix_3210,   pix_7654
+
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 16
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 16
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_16x16_dc_top_ti -- 16x16 dc top predict mode.               *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_16x16_dc_top_ti"
+        .global _x264_predict_16x16_dc_top_ti
+_x264_predict_16x16_dc_top_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            pix_up
+            .reg            dotp_1, dotp_2, dotp_3, dotp_4
+            .reg            dc, dc_0, dc_1, k_1
+
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1                ; k_1    = 0x01010101
+            ADD             pix,        8,          pix_up ; pix_up = pix + 8
+
+            ; load horizontal pixels
+            LDNDW           *-pix[4],    pix_7654:pix_3210
+            LDNDW           *-pix_up[4], pix_FEDC:pix_BA98
+            DOTPU4          pix_3210,   k_1,        dotp_1 ; h[3] + h[2] + h[1] + h[0]
+            DOTPU4          pix_7654,   k_1,        dotp_2 ; h[7] + h[6] + h[5] + h[4]
+            DOTPU4          pix_BA98,   k_1,        dotp_3 ; h[B] + h[A] + h[9] + h[8]
+            DOTPU4          pix_FEDC,   k_1,        dotp_4 ; h[F] + h[E] + h[D] + h[C]
+            ADD             dotp_1,     dotp_2,     dc_0
+            ADD             dotp_3,     dotp_4,     dc_1
+            ADD             dc_0,       dc_1,       dc
+            ADD             dc,         8,          dc
+            SHR             dc,         4,          dc ; ( dc + 8 ) >> 4
+            PACK2           dc,         dc,         dc
+            SPACKU4         dc,         dc,         pix_3210
+            MV              pix_3210,   pix_7654
+
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 16
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 16
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_16x16_dc_128_ti -- 16x16 dc 128 predict mode.               *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_16x16_dc_128_ti"
+        .global _x264_predict_16x16_dc_128_ti
+_x264_predict_16x16_dc_128_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_7654:pix_3210
+            .reg            pix_up
+
+            MVKL            0x80808080, pix_3210
+            MVKH            0x80808080, pix_3210
+            MV              pix_3210,   pix_7654
+            ADD             pix,        8,          pix_up ; pix_up = pix + 8
+
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 8
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 9
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 10
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 11
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 12
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 13
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 14
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 15
+            STNDW           pix_7654:pix_3210, *pix++[4]    ; store lower 8 bytes of line 16
+            STNDW           pix_7654:pix_3210, *pix_up++[4] ; store upper 8 bytes of line 16
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_8x8c_v_ti -- 8x8 chroma vertical predict mode.              *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_8x8c_v_ti"
+        .global _x264_predict_8x8c_v_ti
+_x264_predict_8x8c_v_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_7654:pix_3210
+            LDNDW           *-pix[4], pix_7654:pix_3210  ; load 8 bytes of vertical
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 8
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_8x8c_h_ti -- 8x8 chroma horizontal predict mode.            *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_8x8c_h_ti"
+        .global _x264_predict_8x8c_h_ti
+_x264_predict_8x8c_h_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210
+            .reg            pix_1_7654:pix_1_3210
+            .reg            pix_2_7654:pix_2_3210
+            .reg            pix_3_7654:pix_3_3210
+            .reg            v_0, v_1, v_2, v_3
+            .reg            pix_lf, pix_1x
+
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            ; load vertical pixels (0, 1, 2, 3)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_0,        v_0,        v_0
+            PACK2           v_1,        v_1,        v_1
+            PACK2           v_2,        v_2,        v_2
+            PACK2           v_3,        v_3,        v_3
+            PACKL4          v_0,        v_0,        pix_0_3210
+            PACKL4          v_1,        v_1,        pix_1_3210
+            PACKL4          v_2,        v_2,        pix_2_3210
+            PACKL4          v_3,        v_3,        pix_3_3210
+            MV              pix_0_3210, pix_0_7654
+            MV              pix_1_3210, pix_1_7654
+            MV              pix_2_3210, pix_2_7654
+            MV              pix_3_3210, pix_3_7654
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4]
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4]
+            STNDW           pix_2_7654:pix_2_3210, *pix++[4]
+            STNDW           pix_3_7654:pix_3_3210, *pix++[4]
+            ; load vertical pixels (4, 5, 6, 7)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_0,        v_0,        v_0
+            PACK2           v_1,        v_1,        v_1
+            PACK2           v_2,        v_2,        v_2
+            PACK2           v_3,        v_3,        v_3
+            PACKL4          v_0,        v_0,        pix_0_3210
+            PACKL4          v_1,        v_1,        pix_1_3210
+            PACKL4          v_2,        v_2,        pix_2_3210
+            PACKL4          v_3,        v_3,        pix_3_3210
+            MV              pix_0_3210, pix_0_7654
+            MV              pix_1_3210, pix_1_7654
+            MV              pix_2_3210, pix_2_7654
+            MV              pix_3_3210, pix_3_7654
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4]
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4]
+            STNDW           pix_2_7654:pix_2_3210, *pix++[4]
+            STNDW           pix_3_7654:pix_3_3210, *pix++[4]
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_8x8c_p_ti -- 8x8 chroma plane predict mode.                 *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+		.sect ".text:_x264_predict_8x8c_p_ti"
+        .global _x264_predict_8x8c_p_ti
+_x264_predict_8x8c_p_ti .cproc pix
+            .no_mdep
+
+            .reg            H, V
+            .reg            a, b, c, b_2x, b_4x
+            .reg            h_7654, h_210X ; ignore 3th pixel of horizontal
+            .reg            v_7654, v_210X ; ignore 3th pixel of vertical
+            .reg            v_0, v_1, v_2, v_3, v_32, v_10
+            .reg            dotp_1, dotp_2, dotp_3, dotp_4
+            .reg            k_1234, k_4321, k_17
+
+            .reg            pix_7654:pix_3210
+            .reg            pix_76, pix_54, pix_32, pix_10
+            .reg            pix_up, pix_lf
+            .reg            pix_1x, pix_2y
+            .reg            i0, i1, i
+
+            MVKL            0x01020304, k_1234
+            MVKH            0x01020304, k_1234             ; k_1234 = 0x01020304
+            MVKL            0x04030201, k_4321
+            MVKH            0x04030201, k_4321             ; k_4321 = 0x04030201
+            MVK             17,         k_17               ; k_17   = 17
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            MVK             64,         pix_2y             ; pix_2y = 64 (FDEC_STRIDE * 2)
+            SUB             pix,        28,         pix_up ; pix_up = pix - FDEC_STRIDE + 4
+            SUB             pix_up,     5,          pix_lf ; pix_lf = pix - FDEC_STRIDE - 1
+
+            ; load horizontal pixels
+            LDNW            *pix_lf,    h_210X
+            LDNW            *pix_up,    h_7654
+            ; load vertical pixels (-1, 0, 1, 2)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_2y], v_3 ; skip 3th pixel
+            PACK2           v_1,        v_0,        v_10
+            PACK2           v_3,        v_2,        v_32
+            PACKL4          v_32,       v_10,       v_210X
+            ; load vertical pixels (4, 5, 6, 7)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            PACK2           v_1,        v_0,        v_10
+            PACK2           v_3,        v_2,        v_32
+            PACKL4          v_32,       v_10,       v_7654
+
+            ; calculate H and V
+            DOTPU4          h_7654,     k_4321,     dotp_1 ; dotp_1 = 4*h[7]+3*h[6]+2*h[5]+1*h[4]
+            DOTPU4          h_210X,     k_1234,     dotp_2 ; dotp_2 = 1*h[2]+2*h[1]+3*h[0]+4*h[-1]
+            DOTPU4          v_7654,     k_4321,     dotp_3 ; dotp_3 = 4*v[7]+3*v[6]+2*v[5]+1*v[4]
+            DOTPU4          v_210X,     k_1234,     dotp_4 ; dotp_4 = 1*v[2]+2*v[1]+3*v[0]+4*v[-1]
+            SUB             dotp_1,     dotp_2,     H      ; H = dotp_1 - dotp_2
+            SUB             dotp_3,     dotp_4,     V      ; v = dotp_3 - dotp_4
+
+            ; calcualte a, b and c
+            MPY             k_17,       H,          b
+            MPY             k_17,       V,          c
+            ADD             16,         b,          b
+            ADD             16,         c,          c
+            SHR             b,          5,          b ; b = ( 17 * H + 16 ) >> 5
+            SHR             c,          5,          c ; c = ( 17 * V + 16 ) >> 5
+            SHRU            h_7654,     24,         a ; h_7
+            ADD             v_3,        a,          a ; v_7 == v_3
+            SHL             a,          4,          a ; a = (h_7 + v_7) << 4
+            ADD             b,          b,          b_2x
+            ADD             b_2x,       b_2x,       b_4x
+            PACK2           b_2x,       b_2x,       b_2x
+            PACK2           b_4x,       b_4x,       b_4x
+
+            ; calculate i0
+            ADD             b,          c,          i0
+            MPY             3,          i0,         i0
+            SUB             a,          i0,         i0
+            ADD             16,         i0,         i0 ; i0 = a - b * 3 - c * 3 + 16
+            MVK             7,          i              ; i = 7
+
+loop_predict_8x8c_p: .trip  8,          8,          8  ; loop count
+
+            ADD             i0,         b,          i1 ; i1 = i0 + b
+            PACK2           i1,         i0,         pix_10
+            ADD             i0,         c,          i0 ; i0 += c for next time
+
+            ADD2            pix_10,     b_2x,       pix_32
+            ADD2            pix_10,     b_4x,       pix_54
+            ADD2            pix_54,     b_2x,       pix_76
+
+            SHR2            pix_10,     5,          pix_10
+            SHR2            pix_32,     5,          pix_32
+            SHR2            pix_54,     5,          pix_54
+            SHR2            pix_76,     5,          pix_76
+
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes
+
+   [i]      BDEC            loop_predict_8x8c_p,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_8x8c_dc_ti -- 8x8 chroma dc predict mode.                   *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;*                                                                          *;
+;*   /*                                                                     *;
+;*         s0 s1                                                            *;
+;*      s2                                                                  *;
+;*      s3                                                                  *;
+;*   */                                                                     *;
+;*   for( i = 0; i < 4; i++ )                                               *;
+;*   {                                                                      *;
+;*       s0 += src[i - FDEC_STRIDE];                                        *;
+;*       s1 += src[i + 4 - FDEC_STRIDE];                                    *;
+;*       s2 += src[-1 + i * FDEC_STRIDE];                                   *;
+;*       s3 += src[-1 + (i+4)*FDEC_STRIDE];                                 *;
+;*   }                                                                      *;
+;*   /*                                                                     *;
+;*     dc0 dc1                                                              *;
+;*     dc2 dc3                                                              *;
+;*    */                                                                    *;
+;*   dc0 = PIXEL_SPLAT_X4( ( s0 + s2 + 4 ) >> 3 );                          *;
+;*   dc1 = PIXEL_SPLAT_X4( ( s1 + 2 ) >> 2 );                               *;
+;*   dc2 = PIXEL_SPLAT_X4( ( s3 + 2 ) >> 2 );                               *;
+;*   dc3 = PIXEL_SPLAT_X4( ( s1 + s3 + 4 ) >> 3 );                          *;
+;*                                                                          *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_8x8c_dc_ti"
+        .global _x264_predict_8x8c_dc_ti
+_x264_predict_8x8c_dc_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210
+            .reg            pix_1_7654:pix_1_3210
+            .reg            v_0, v_1, v_2, v_3
+            .reg            s_0, s_1, s_2, s_3
+            .reg            dc_0, dc_1, dc_2, dc_3
+            .reg            pix_lf, pix_1x, k_1
+
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            ; load horizontal pixels
+            LDNDW           *-pix[4], pix_0_7654:pix_0_3210
+            DOTPU4          pix_0_3210, k_1,        s_0 ; h[3] + h[2] + h[1] + h[0]
+            DOTPU4          pix_0_7654, k_1,        s_1 ; h[7] + h[6] + h[5] + h[4]
+            ; load vertical pixels (0, 1, 2, 3)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             v_0,        v_1,        s_2
+            ADD             s_2,        v_2,        s_2
+            ADD             s_2,        v_3,        s_2
+            ; load vertical pixels (4, 5, 6, 7)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             v_0,        v_1,        s_3
+            ADD             s_3,        v_2,        s_3
+            ADD             s_3,        v_3,        s_3
+            ; calculate dc_0, dc_1, dc_2, dc_3
+            ADD             s_0,        s_2,        dc_0
+            ADD             s_1,        s_3,        dc_3
+            ADD             dc_0,       4,          dc_0
+            ADD             dc_3,       4,          dc_3
+            SHR             dc_0,       3,          dc_0 ; dc_0 = (s0 + s2 + 4) >> 3
+            SHR             dc_3,       3,          dc_3 ; dc_3 = (s1 + s3 + 4) >> 3
+            ADD             s_1,        2,          dc_1
+            ADD             s_3,        2,          dc_2
+            SHR             dc_1,       2,          dc_1 ; dc_1 = (s1 + 2) >> 2
+            SHR             dc_2,       2,          dc_2 ; dc_2 = (s3 + 2) >> 2
+            PACK2           dc_0,       dc_0,       dc_0
+            PACK2           dc_1,       dc_1,       dc_1
+            PACK2           dc_2,       dc_2,       dc_2
+            PACK2           dc_3,       dc_3,       dc_3
+            SPACKU4         dc_0,       dc_0,       pix_0_3210
+            SPACKU4         dc_1,       dc_1,       pix_0_7654
+            SPACKU4         dc_2,       dc_2,       pix_1_3210
+            SPACKU4         dc_3,       dc_3,       pix_1_7654
+
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 1
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 2
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 3
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 4
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 5
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 6
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 7
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 8
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_8x8c_dc_left_ti -- 8x8 chroma dc left predict mode.         *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_8x8c_dc_left_ti"
+        .global _x264_predict_8x8c_dc_left_ti
+_x264_predict_8x8c_dc_left_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210
+            .reg            pix_1_7654:pix_1_3210
+            .reg            pix_lf, pix_1x
+            .reg            v_0, v_1, v_2, v_3
+            .reg            dc_0, dc_1
+
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            ; load vertical pixels (0, 1, 2, 3)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             v_0,        v_1,        dc_0
+            ADD             dc_0,       v_2,        dc_0
+            ADD             dc_0,       v_3,        dc_0
+            ; load vertical pixels (4, 5, 6, 7)
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             v_0,        v_1,        dc_1
+            ADD             dc_1,       v_2,        dc_1
+            ADD             dc_1,       v_3,        dc_1
+            ; calculate dc_0, dc_1
+            ADD             dc_0,       2,          dc_0
+            ADD             dc_1,       2,          dc_1
+            SHR             dc_0,       2,          dc_0 ; (dc_0 + 2) >> 2
+            SHR             dc_1,       2,          dc_1 ; (dc_1 + 2) >> 2
+            PACK2           dc_0,       dc_0,       dc_0
+            PACK2           dc_1,       dc_1,       dc_1
+            SPACKU4         dc_0,       dc_0,       pix_0_3210
+            SPACKU4         dc_1,       dc_1,       pix_1_3210
+            MV              pix_0_3210, pix_0_7654
+            MV              pix_1_3210, pix_1_7654
+
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 1
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 2
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 3
+            STNDW           pix_0_7654:pix_0_3210, *pix++[4] ; store 8 bytes of line 4
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 5
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 6
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 7
+            STNDW           pix_1_7654:pix_1_3210, *pix++[4] ; store 8 bytes of line 8
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_8x8c_dc_top_ti -- 8x8 chroma dc top predict mode.           *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_8x8c_dc_top_ti"
+        .global _x264_predict_8x8c_dc_top_ti
+_x264_predict_8x8c_dc_top_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_7654:pix_3210
+            .reg            dc_0, dc_1, k_1
+
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1
+
+            ; load horizontal pixels
+            LDNDW           *-pix[4], pix_7654:pix_3210
+            DOTPU4          pix_3210,   k_1,        dc_0 ; dc_0 = h[3] + h[2] + h[1] + h[0]
+            DOTPU4          pix_7654,   k_1,        dc_1 ; dc_1 = h[7] + h[6] + h[5] + h[4]
+            ; calculate dc_0, dc_1
+            ADD             dc_0,       2,          dc_0
+            ADD             dc_1,       2,          dc_1
+            SHR             dc_0,       2,          dc_0 ; (dc_0 + 2) >> 2
+            SHR             dc_1,       2,          dc_1 ; (dc_1 + 2) >> 2
+            PACK2           dc_0,       dc_0,       dc_0
+            PACK2           dc_1,       dc_1,       dc_1
+            SPACKU4         dc_0,       dc_0,       pix_3210
+            SPACKU4         dc_1,       dc_1,       pix_7654
+
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 8
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_8x8c_dc_128_ti -- 8x8 chroma dc 128 predict mode.           *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_8x8c_dc_128_ti"
+        .global _x264_predict_8x8c_dc_128_ti
+_x264_predict_8x8c_dc_128_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_7654:pix_3210
+            MVKL            0x80808080, pix_3210
+            MVKH            0x80808080, pix_3210
+            MV              pix_3210,   pix_7654
+
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 1
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 2
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 3
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 4
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 5
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 6
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 7
+            STNDW           pix_7654:pix_3210, *pix++[4] ; store 8 bytes of line 8
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_v_ti -- 4x4 vertical predict mode.                      *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+		.sect ".text:_x264_predict_4x4_v_ti"
+        .global _x264_predict_4x4_v_ti
+_x264_predict_4x4_v_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_3210
+            LDNW            *-pix[8],   pix_3210  ; load 4 bytes of horizontal
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_h_ti -- 4x4 horizontal predict mode.                    *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+		.sect ".text:_x264_predict_4x4_h_ti"
+        .global _x264_predict_4x4_h_ti
+_x264_predict_4x4_h_ti .cproc pix
+            .no_mdep
+
+            .reg            v_0, v_1, v_2, v_3
+			.reg            pix_lf, pix_1x
+
+			MVK             32,         pix_1x             ; pix_1x = 32 (FEDC_STRIDE / 1)
+			SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            LDBU            *pix_lf++[pix_1x], v_0 ; load vertical pixel 0
+            LDBU            *pix_lf++[pix_1x], v_1 ; load vertical pixel 1
+            LDBU            *pix_lf++[pix_1x], v_2 ; load vertical pixel 2
+            LDBU            *pix_lf++[pix_1x], v_3 ; load vertical pixel 3
+            PACK2           v_0,        v_0,        v_0
+            PACK2           v_1,        v_1,        v_1
+            PACK2           v_2,        v_2,        v_2
+            PACK2           v_3,        v_3,        v_3
+            PACKL4          v_0,        v_0,        v_0
+            PACKL4          v_1,        v_1,        v_1
+            PACKL4          v_2,        v_2,        v_2
+            PACKL4          v_3,        v_3,        v_3
+            STNW            v_0,        *pix++[8] ; store 4 bytes of line 1
+            STNW            v_1,        *pix++[8] ; store 4 bytes of line 2
+            STNW            v_2,        *pix++[8] ; store 4 bytes of line 3
+            STNW            v_3,        *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_dc_ti -- 4x4 dc predict mode.                           *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_dc_ti"
+        .global _x264_predict_4x4_dc_ti
+_x264_predict_4x4_dc_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_3210
+            .reg            v_0, v_1, v_2, v_3
+            .reg            pix_lf, pix_1x, dc, k_1
+
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1                ; k_1    = 0x01010101
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            ; load horizontal and vertical pixels
+            LDNW            *-pix[8],   pix_3210
+            DOTPU4          pix_3210,   k_1,        dc
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             dc,         v_0,        dc
+            ADD             dc,         v_1,        dc
+            ADD             dc,         v_2,        dc
+            ADD             dc,         v_3,        dc
+            ADD             dc,         4,          dc
+            SHR             dc,         3,          dc ; ( dc + 4 ) >> 3
+            PACK2           dc,         dc,         dc
+            SPACKU4         dc,         dc,         pix_3210
+
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_dc_left_ti -- 4x4 dc left predict mode.                 *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_dc_left_ti"
+        .global _x264_predict_4x4_dc_left_ti
+_x264_predict_4x4_dc_left_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_3210
+            .reg            v_0, v_1, v_2, v_3
+            .reg            pix_lf, pix_1x, dc
+
+            MVK             32,         pix_1x             ; pix_1x = 32 (FDEC_STRIDE / 1)
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+
+            ; load vertical pixels
+            LDBU            *pix_lf++[pix_1x], v_0
+            LDBU            *pix_lf++[pix_1x], v_1
+            LDBU            *pix_lf++[pix_1x], v_2
+            LDBU            *pix_lf++[pix_1x], v_3
+            ADD             v_0,        v_1,        dc
+            ADD             dc,         v_2,        dc
+            ADD             dc,         v_3,        dc
+            ADD             dc,         2,          dc
+            SHR             dc,         2,          dc ; ( dc + 2 ) >> 2
+            PACK2           dc,         dc,         dc
+            SPACKU4         dc,         dc,         pix_3210
+
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_dc_top_ti -- 4x4 dc top predict mode.                   *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_dc_top_ti"
+        .global _x264_predict_4x4_dc_top_ti
+_x264_predict_4x4_dc_top_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_3210
+            .reg            dc, k_1
+
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1
+
+            ; load horizontal pixels
+            LDNW            *-pix[8],   pix_3210
+            DOTPU4          pix_3210,   k_1,        dc
+            ADD             dc,         2,          dc
+            SHR             dc,         2,          dc ; ( dc + 2 ) >> 2
+            PACK2           dc,         dc,         dc
+            SPACKU4         dc,         dc,         pix_3210
+
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_dc_128_ti -- 4x4 dc 128 predict mode.                   *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_dc_128_ti"
+        .global _x264_predict_4x4_dc_128_ti
+_x264_predict_4x4_dc_128_ti .cproc pix
+            .no_mdep
+
+            .reg            pix_3210
+            MVKL            0x80808080, pix_3210
+            MVKH            0x80808080, pix_3210
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3210,   *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_ddl_ti -- 4x4 diagonal down left predict mode.          *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;*                                                                          *;
+;*  M  A  B  C  D  E  F  G  H                                               *;
+;*  I  a  b  c  d                                                           *;
+;*  J  e  f  g  h                                                           *;
+;*  K  i  j  k  l                                                           *;
+;*  L  m  n  o  p                                                           *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_ddl_ti"
+        .global _x264_predict_4x4_ddl_ti
+_x264_predict_4x4_ddl_ti .cproc pix
+            .no_mdep
+
+            .reg            r_HGFE:r_DCBA
+            .reg            r_HG, r_GF, r_FE, r_ED, r_DC, r_CB, r_BA
+            .reg            pix_0_3210, pix_1_3210
+            .reg            pix_2_3210, pix_3_3210
+            .reg            pix_X6, pix_54, pix_32, pix_10
+            .reg            k_3_1, k_2_2
+
+            MVKL            0x00030001, k_3_1
+            MVKH            0x00030001, k_3_1
+            MVKL            0x00020002, k_2_2
+            MVKH            0x00020002, k_2_2
+            ; load horizontal pixels (A, B, C, D, E, F, G, H)
+            LDNDW           *-pix[4],   r_HGFE:r_DCBA
+            UNPKLU4         r_DCBA,     r_BA
+            UNPKHU4         r_DCBA,     r_DC
+            UNPKLU4         r_HGFE,     r_FE
+            UNPKHU4         r_HGFE,     r_HG
+            PACKLH2         r_DC,       r_BA,       r_CB
+            PACkLH2         r_FE,       r_DC,       r_ED
+            PACKLH2         r_HG,       r_FE,       r_GF
+            ; (x1 + 2*x2 + x3 + 2) >> 2
+            ADD2            r_BA,       r_CB,       pix_10
+            ADD2            r_DC,       r_ED,       pix_32
+            ADD2            r_FE,       r_GF,       pix_54
+            ADD2            pix_10,     r_CB,       pix_10
+            ADD2            pix_32,     r_ED,       pix_32
+            ADD2            pix_54,     r_GF,       pix_54
+            ADD2            pix_10,     r_DC,       pix_10
+            ADD2            pix_32,     r_FE,       pix_32
+            ADD2            pix_54,     r_HG,       pix_54
+            DOTP2           r_HG,       k_3_1,      pix_X6 ; (G + 3*H)
+            ADD2            pix_10,     k_2_2,      pix_10
+            ADD2            pix_32,     k_2_2,      pix_32
+            ADD2            pix_54,     k_2_2,      pix_54
+            ADD2            pix_X6,     k_2_2,      pix_X6
+            SHR2            pix_10,     2,          pix_10
+            SHR2            pix_32,     2,          pix_32
+            SHR2            pix_54,     2,          pix_54
+            SHR2            pix_X6,     2,          pix_X6
+
+            ;*  M  A  B  C  D  *;
+            ;*  I  0  1  2  3  *;
+            ;*  J  1  2  3  4  *;
+            ;*  K  2  3  4  5  *;
+            ;*  L  3  4  5  6  *;
+            SPACKU4         pix_32,     pix_10,     pix_0_3210
+            SPACKU4         pix_54,     pix_32,     pix_2_3210
+            SHRMB           pix_54,     pix_0_3210, pix_1_3210
+            SHRMB           pix_X6,     pix_2_3210, pix_3_3210
+
+            STNW            pix_0_3210, *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_1_3210, *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_2_3210, *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3_3210, *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_ddr_ti -- 4x4 diagonal down right predict mode.         *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;*                                                                          *;
+;*  M  A  B  C  D                                                           *;
+;*  I  a  b  c  d                                                           *;
+;*  J  e  f  g  h                                                           *;
+;*  K  i  j  k  l                                                           *;
+;*  L  m  n  o  p                                                           *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_ddr_ti"
+        .global _x264_predict_4x4_ddr_ti
+_x264_predict_4x4_ddr_ti .cproc pix
+            .no_mdep
+
+            .reg            r_DCBA, r_M, r_I, r_J, r_K, r_L
+            .reg            r_DC, r_CB, r_BA, r_AM, r_MI, r_IJ, r_JK, r_KL
+            .reg            pix_0_3210, pix_1_3210
+            .reg            pix_2_3210, pix_3_3210
+            .reg            pix_X6, pix_54, pix_32, pix_10
+            .reg            pix_lf, pix_1x, k_2_2, k_1_2_1
+
+            MVKL            0x01020100, k_1_2_1
+            MVKH            0x01020100, k_1_2_1
+            MVKL            0x00020002, k_2_2
+            MVKH            0x00020002, k_2_2
+            MVK             32,         pix_1x             ; pix_1x = 32
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+            ; load horizontal and vertical pixels (A, B, C, D, M, I, J, K, L)
+            LDNW            *-pix[8],   r_DCBA
+            LDBU            *-pix_lf[pix_1x],  r_M
+            LDBU            *pix_lf++[pix_1x], r_I
+            LDBU            *pix_lf++[pix_1x], r_J
+            LDBU            *pix_lf++[pix_1x], r_K
+            LDBU            *pix_lf++[pix_1x], r_L
+            UNPKLU4         r_DCBA,     r_BA
+            UNPKHU4         r_DCBA,     r_DC
+            PACK2           r_M,        r_I,        r_MI
+            PACK2           r_J,        r_K,        r_JK
+            PACK2           r_I,        r_J,        r_IJ
+            PACK2           r_K,        r_L,        r_KL
+            PACKLH2         r_DC,       r_BA,       r_CB
+            PACKLH2         r_BA,       r_MI,       r_AM
+            ; (x1 + 2*x2 + x3 + 2) >> 2
+            ADD2            r_IJ,       r_JK,       pix_10
+            ADD2            r_AM,       r_MI,       pix_32
+            ADD2            r_CB,       r_BA,       pix_54
+            ADD2            pix_10,     r_JK,       pix_10
+            ADD2            pix_32,     r_MI,       pix_32
+            ADD2            pix_54,     r_BA,       pix_54
+            ADD2            pix_10,     r_KL,       pix_10
+            ADD2            pix_32,     r_IJ,       pix_32
+            ADD2            pix_54,     r_AM,       pix_54
+            DOTPU4          r_DCBA,     k_1_2_1,    pix_X6 ; (D + 2*C + B)
+            ADD2            pix_10,     k_2_2,      pix_10
+            ADD2            pix_32,     k_2_2,      pix_32
+            ADD2            pix_54,     k_2_2,      pix_54
+            ADD2            pix_X6,     k_2_2,      pix_X6
+            SHR2            pix_10,     2,          pix_10
+            SHR2            pix_32,     2,          pix_32
+            SHR2            pix_54,     2,          pix_54
+            SHR2            pix_X6,     2,          pix_X6
+
+            ;*  M  A  B  C  D  *;
+            ;*  I  3  4  5  6  *;
+            ;*  J  2  3  4  5  *;
+            ;*  K  1  2  3  4  *;
+            ;*  L  0  1  2  3  *;
+            SPACKU4         pix_32,     pix_10,     pix_3_3210
+            SPACKU4         pix_54,     pix_32,     pix_1_3210
+            SHRMB           pix_54,     pix_3_3210, pix_2_3210
+            SHRMB           pix_X6,     pix_1_3210, pix_0_3210
+
+            STNW            pix_0_3210, *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_1_3210, *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_2_3210, *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3_3210, *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_vr_ti -- 4x4 vertical right predict mode.               *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;*                                                                          *;
+;*  M  A  B  C  D                                                           *;
+;*  I  a  b  c  d                                                           *;
+;*  J  e  f  g  h                                                           *;
+;*  K  i  j  k  l                                                           *;
+;*  L  m  n  o  p                                                           *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_vr_ti"
+        .global _x264_predict_4x4_vr_ti
+_x264_predict_4x4_vr_ti .cproc pix
+            .no_mdep
+
+            .reg            r_DCBA, r_CBAM, r_M, r_I, r_J, r_K
+            .reg            r_DC, r_CB, r_BA, r_AM, r_MI, r_IJ, r_JK
+            .reg            pix_0_3210, pix_1_3210
+            .reg            pix_2_3210, pix_3_3210
+            .reg            pix_54, pix_45, pix_32, pix_10
+            .reg            pix_lf, pix_1x, k_2_2
+
+            MVKL            0x00020002, k_2_2
+            MVKH            0x00020002, k_2_2
+            MVK             32,         pix_1x             ; pix_1x = 32
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+            ; load horizontal and vertical pixels (A, B, C, D, M, I, J, K)
+            LDNW            *-pix[8],   r_DCBA
+            LDBU            *-pix_lf[pix_1x],  r_M
+            LDBU            *pix_lf++[pix_1x], r_I
+            LDBU            *pix_lf++[pix_1x], r_J
+            LDBU            *pix_lf++[pix_1x], r_K
+            UNPKLU4         r_DCBA,     r_BA
+            UNPKHU4         r_DCBA,     r_DC
+            PACK2           r_M,        r_I,        r_MI
+            PACK2           r_J,        r_K,        r_JK
+            PACK2           r_I,        r_J,        r_IJ
+            PACKLH2         r_DC,       r_BA,       r_CB
+            PACKLH2         r_BA,       r_MI,       r_AM
+            PACKL4          r_CB,       r_AM,       r_CBAM
+            ; (x1 + 2*x2 + x3 + 2) >> 2
+            ADD2            r_BA,       r_AM,       pix_10
+            ADD2            r_DC,       r_CB,       pix_32
+            ADD2            r_MI,       r_IJ,       pix_54
+            ADD2            pix_10,     r_AM,       pix_10
+            ADD2            pix_32,     r_CB,       pix_32
+            ADD2            pix_54,     r_IJ,       pix_54
+            ADD2            pix_10,     r_MI,       pix_10
+            ADD2            pix_32,     r_BA,       pix_32
+            ADD2            pix_54,     r_JK,       pix_54
+            ADD2            pix_10,     k_2_2,      pix_10
+            ADD2            pix_32,     k_2_2,      pix_32
+            ADD2            pix_54,     k_2_2,      pix_54
+            SHR2            pix_10,     2,          pix_10
+            SHR2            pix_32,     2,          pix_32
+            SHR2            pix_54,     2,          pix_54
+            SWAP4           pix_54,     pix_54
+            SWAP2           pix_54,     pix_45
+
+            ;*  M  A  B  C  D  *;
+            ;*  I  6  7  8  9  *;
+            ;*  J  0  1  2  3  *;
+            ;*  K  5  6  7  8  *;
+            ;*  L  4  0  1  2  *;
+            AVGU4           r_DCBA,     r_CBAM,     pix_0_3210 ; (x1 + x2 + 1) >> 1
+            SPACKU4         pix_32,     pix_10,     pix_1_3210
+            SHLMB           pix_54,     pix_0_3210, pix_2_3210
+            SHLMB           pix_45,     pix_1_3210, pix_3_3210
+
+            STNW            pix_0_3210, *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_1_3210, *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_2_3210, *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3_3210, *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_hd_ti -- 4x4 horizontal down predict mode.              *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;*                                                                          *;
+;*  M  A  B  C  D                                                           *;
+;*  I  a  b  c  d                                                           *;
+;*  J  e  f  g  h                                                           *;
+;*  K  i  j  k  l                                                           *;
+;*  L  m  n  o  p                                                           *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_hd_ti"
+        .global _x264_predict_4x4_hd_ti
+_x264_predict_4x4_hd_ti .cproc pix
+            .no_mdep
+
+            .reg            r_CBAM, r_I, r_J, r_K, r_L
+            .reg            r_CB, r_BA, r_AM, r_MI, r_IJ, r_JK, r_KL
+            .reg            pix_0_3210, pix_1_3210
+            .reg            pix_2_3210, pix_3_3210
+            .reg            pix_01, pix_23, pix_45, pix_67, pix_89
+            .reg            pix_26:pix_37, pix_48:pix_59
+            .reg            pix_lf, pix_1x, k_2_2
+
+            MVKL            0x00020002, k_2_2
+            MVKH            0x00020002, k_2_2
+            MVK             32,         pix_1x             ; pix_1x = 32
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+            ; load horizontal and vertical pixels (A, B, C, M, I, J, K, L)
+            LDNW            *-pix_lf[8],       r_CBAM
+            LDBU            *pix_lf++[pix_1x], r_I
+            LDBU            *pix_lf++[pix_1x], r_J
+            LDBU            *pix_lf++[pix_1x], r_K
+            LDBU            *pix_lf++[pix_1x], r_L
+            UNPKLU4         r_CBAM,     r_AM
+            UNPKHU4         r_CBAM,     r_CB
+            PACK2           r_I,        r_J,        r_IJ
+            PACK2           r_K,        r_L,        r_KL
+            PACK2           r_J,        r_K,        r_JK
+            PACKLH2         r_CB,       r_AM,       r_BA
+            PACKLH2         r_AM,       r_IJ,       r_MI
+            ; (x1 + 2*x2 + x3 + 2) >> 2
+            ADD2            r_CB,       r_BA,       pix_01
+            ADD2            r_AM,       r_MI,       pix_23
+            ADD2            r_IJ,       r_JK,       pix_45
+            ADD2            pix_01,     r_BA,       pix_01
+            ADD2            pix_23,     r_MI,       pix_23
+            ADD2            pix_45,     r_JK,       pix_45
+            ADD2            pix_01,     r_AM,       pix_01
+            ADD2            pix_23,     r_IJ,       pix_23
+            ADD2            pix_45,     r_KL,       pix_45
+            ADD2            pix_01,     k_2_2,      pix_01
+            ADD2            pix_23,     k_2_2,      pix_23
+            ADD2            pix_45,     k_2_2,      pix_45
+            SHR2            pix_01,     2,          pix_01
+            SHR2            pix_23,     2,          pix_23
+            SHR2            pix_45,     2,          pix_45
+            ; (x1 + x2 + 1) >> 1
+            AVG2            r_MI,       r_IJ,       pix_67
+            AVG2            r_JK,       r_KL,       pix_89
+
+            ;*  M  A  B  C  D  *;
+            ;*  I  6  2  1  0  *;
+            ;*  J  7  3  6  2  *;
+            ;*  K  8  4  7  3  *;
+            ;*  L  9  5  8  4  *;
+            DPACK2          pix_23,     pix_67,     pix_26:pix_37
+            DPACK2          pix_45,     pix_89,     pix_48:pix_59
+            SPACKU4         pix_01,     pix_26,     pix_0_3210
+            SPACKU4         pix_26,     pix_37,     pix_1_3210
+            SPACKU4         pix_37,     pix_48,     pix_2_3210
+            SPACKU4         pix_48,     pix_59,     pix_3_3210
+
+            STNW            pix_0_3210, *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_1_3210, *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_2_3210, *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3_3210, *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_vl_ti -- 4x4 vertical left predict mode.                *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;*                                                                          *;
+;*  M  A  B  C  D  E  F  G  H                                               *;
+;*  I  a  b  c  d                                                           *;
+;*  J  e  f  g  h                                                           *;
+;*  K  i  j  k  l                                                           *;
+;*  L  m  n  o  p                                                           *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_vl_ti"
+        .global _x264_predict_4x4_vl_ti
+_x264_predict_4x4_vl_ti .cproc pix
+            .no_mdep
+
+            .reg            r_HGFE:r_DCBA
+            .reg            r_EDCB, r_FEDC
+            .reg            r_HG, r_GF, r_FE, r_ED, r_DC, r_CB, r_BA
+            .reg            pix_0_3210, pix_1_3210
+            .reg            pix_2_3210, pix_3_3210
+            .reg            pix_X4, pix_32, pix_10
+            .reg            k_2_2
+
+            MVKL            0x00020002, k_2_2
+            MVKH            0x00020002, k_2_2
+            ; load horizontal pixels (A, B, C, D, E, F, G, H)
+            LDNDW           *-pix[4],   r_HGFE:r_DCBA
+            UNPKLU4         r_DCBA,     r_BA
+            UNPKHU4         r_DCBA,     r_DC
+            UNPKLU4         r_HGFE,     r_FE
+            UNPKHU4         r_HGFE,     r_HG
+            PACKLH2         r_DC,       r_BA,       r_CB
+            PACkLH2         r_FE,       r_DC,       r_ED
+            PACKLH2         r_HG,       r_FE,       r_GF
+            ; (x1 + 2*x2 + x3 + 2) >> 2
+            ADD2            r_BA,       r_CB,       pix_10
+            ADD2            r_DC,       r_ED,       pix_32
+            ADD2            r_FE,       r_GF,       pix_X4
+            ADD2            pix_10,     r_CB,       pix_10
+            ADD2            pix_32,     r_ED,       pix_32
+            ADD2            pix_X4,     r_GF,       pix_X4
+            ADD2            pix_10,     r_DC,       pix_10
+            ADD2            pix_32,     r_FE,       pix_32
+            ADD2            pix_X4,     r_HG,       pix_X4
+            ADD2            pix_10,     k_2_2,      pix_10
+            ADD2            pix_32,     k_2_2,      pix_32
+            ADD2            pix_X4,     k_2_2,      pix_X4
+            SHR2            pix_10,     2,          pix_10
+            SHR2            pix_32,     2,          pix_32
+            SHR2            pix_X4,     2,          pix_X4
+
+            ;*  M  A  B  C  D  *;
+            ;*  I  5  6  7  8  *;
+            ;*  J  0  1  2  3  *;
+            ;*  K  6  7  8  9  *;
+            ;*  L  1  2  3  4  *;
+            SHRMB           r_HGFE,     r_DCBA,     r_EDCB
+            PACKLH2         r_HGFE,     r_DCBA,     r_FEDC
+            AVGU4           r_DCBA,     r_EDCB,     pix_0_3210 ; (x1 + x2 + 1) >> 1
+            SPACKU4         pix_32,     pix_10,     pix_1_3210
+            AVGU4           r_EDCB,     r_FEDC,     pix_2_3210 ; (x1 + x2 + 1) >> 1
+            SHRMB           pix_X4,     pix_1_3210, pix_3_3210
+
+            STNW            pix_0_3210, *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_1_3210, *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_2_3210, *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3_3210, *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_predict_4x4_hu_ti -- 4x4 horizontal up predict mode.                *;
+;* NOTE: this function suppose stride value is 32 (FDEC_STRIDE).            *;
+;*                                                                          *;
+;*  M  A  B  C  D                                                           *;
+;*  I  a  b  c  d                                                           *;
+;*  J  e  f  g  h                                                           *;
+;*  K  i  j  k  l                                                           *;
+;*  L  m  n  o  p                                                           *;
+;* ======================================================================== *;
+        .sect ".text:_x264_predict_4x4_hu_ti"
+        .global _x264_predict_4x4_hu_ti
+_x264_predict_4x4_hu_ti .cproc pix
+            .no_mdep
+
+            .reg            r_I, r_J, r_K, r_L
+            .reg            r_IJ, r_JK, r_KL, r_LL
+            .reg            pix_0_3210, pix_1_3210
+            .reg            pix_2_3210, pix_3_3210
+            .reg            pix_02, pix_13, pix_46, pix_56
+            .reg            pix_10:pix_32, pix_54:pix_66
+            .reg            pix_lf, pix_1x, k_2_2
+
+            MVKL            0x00020002, k_2_2
+            MVKH            0x00020002, k_2_2
+            MVK             32,         pix_1x             ; pix_1x = 32
+            SUB             pix,        1,          pix_lf ; pix_lf = pix - 1
+            ; load vertical pixels (I, J, K, L)
+            LDBU            *pix_lf++[pix_1x], r_I
+            LDBU            *pix_lf++[pix_1x], r_J
+            LDBU            *pix_lf++[pix_1x], r_K
+            LDBU            *pix_lf++[pix_1x], r_L
+            PACK2           r_I,        r_J,        r_IJ
+            PACK2           r_J,        r_K,        r_JK
+            PACK2           r_K,        r_L,        r_KL
+            PACK2           r_L,        r_L,        r_LL
+            ; (x1 + x2 + 1) >> 1
+            AVG2            r_IJ,       r_JK,       pix_02
+            AVG2            r_KL,       r_LL,       pix_46
+            ; (x1 + 2*x2 + x3 + 2) >> 2
+            ADD2            r_IJ,       r_JK,       pix_13
+            ADD2            r_KL,       r_LL,       pix_56
+            ADD2            pix_13,     r_JK,       pix_13
+            ADD2            pix_56,     r_LL,       pix_56
+            ADD2            pix_13,     r_KL,       pix_13
+            ADD2            pix_56,     r_LL,       pix_56
+            ADD2            pix_13,     k_2_2,      pix_13
+            ADD2            pix_56,     k_2_2,      pix_56
+            SHR2            pix_13,     2,          pix_13
+            SHR2            pix_56,     2,          pix_56
+
+            ;*  M  A  B  C  D  *;
+            ;*  I  0  1  2  3  *;
+            ;*  J  2  3  4  5  *;
+            ;*  K  4  5  6  6  *;
+            ;*  L  6  6  6  6  *;
+            DPACK2          pix_13,     pix_02,     pix_10:pix_32
+            DPACK2          pix_56,     pix_46,     pix_54:pix_66
+            PACKL4          pix_32,     pix_10,     pix_0_3210
+            PACKL4          pix_54,     pix_32,     pix_1_3210
+            PACKL4          pix_66,     pix_54,     pix_2_3210
+            PACKL4          pix_66,     pix_66,     pix_3_3210
+
+            STNW            pix_0_3210, *pix++[8] ; store 4 bytes of line 1
+            STNW            pix_1_3210, *pix++[8] ; store 4 bytes of line 2
+            STNW            pix_2_3210, *pix++[8] ; store 4 bytes of line 3
+            STNW            pix_3_3210, *pix++[8] ; store 4 bytes of line 4
+
+            .return
+            .endproc

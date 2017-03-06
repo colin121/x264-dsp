@@ -1,0 +1,884 @@
+;* ================================================================================================ *;
+;*  quant-a.sa: quantization and level-run for TI C6000 DSP                                         *;
+;*                                                                                                  *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*  | cpu cost table of quantization and level-run on DM6467 simulator                         |    *;
+;*  |------------------------------------------------------------------------------------------|    *;
+;*  | Function         | Optimized cost (cycles) | Pure C cost (cycles)    | Result            |    *;
+;*  |                  |-------------------------|-------------------------|-------------------|    *;
+;*  |                  | Debug      | Release    | Debug      | Release    | Debug   | Release |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | quant_4x4        | 184        | 75         | 1055       | 106        |  5.7 *  |  1.4 *  |    *;
+;*  | quant_4x4_dc     | 146        | 77         | 1039       | 65         |  7.1    |  0.8 x  |    *;
+;*  | quant_2x2_dc     | 44         | 20         | 187        | 34         |  4.3    |  1.7    |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | dequant_4x4      | 176        | 82         | 658        | 168        |  3.7 *  |  2.0 *  |    *;
+;*  | dequant_4x4_shl  | N/A        | 66         | N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  | dequant_4x4_shr  | 123        | 71         | N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  | dequant_4x4_dc   | 157        | 88         | 609        | 45         |  3.9    |  0.5 x  |    *;
+;*  | dequant_4x4_dc_shr | 103      | 72         | N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  | dequant_4x4_dc_shl | N/A      | N/A        | N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | decimate_score16 | 204(58~439)| 71 (30~115)|472(103~788)| 184(53~441)|  2.3 *  |  2.6 *  |    *;
+;*  | coeff_last16     | 73  (68~80)| 37  (27~42)|192 (27~297)|  99(17~130)|  2.6    |  2.7    |    *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*                                                                                                  *;
+;* ================================================================================================ *;
+
+;* ======================================================================== *;
+;* quant_4x4_ti -- quant on 4x4 block (memory unaligned)                    *;
+;* ======================================================================== *;
+		.sect ".text:_quant_4x4_ti"
+        .global _quant_4x4_ti
+_quant_4x4_ti .cproc dct, mf, bias
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            mf_32:mf_10
+            .reg            bias_32:bias_10
+            .reg            mpy_3:mpy_2
+            .reg            mpy_1:mpy_0
+            .reg            sign_32, sign_10
+            .reg            pos_32,  pos_10
+            .reg            neg_32,  neg_10
+            .reg            nz_0,    nz_1,    nz_2,    nz_3
+            .reg            nz_hi,   nz_lo,   nz,      k_0
+
+            ZERO            k_0                         ; k_0 = 0x00000000
+
+            ; process 1st line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 1
+            LDNDW           *mf++,      mf_32:mf_10     ; 8 bytes of mf line 1
+            LDNDW           *bias++,    bias_32:bias_10 ; 8 bytes of bias line 1
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_32,    dct_32
+            SADD2           dct_10,     bias_10,    dct_10
+            MPY2            dct_32,     mf_32,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_0 ; count non-zero dct
+            STNDW           dct_32:dct_10, *dct++        ; store 8 bytes of dct line 1
+
+            ; process 2nd line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 2
+            LDNDW           *mf++,      mf_32:mf_10     ; 8 bytes of mf line 2
+            LDNDW           *bias++,    bias_32:bias_10 ; 8 bytes of bias line 2
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_32,    dct_32
+            SADD2           dct_10,     bias_10,    dct_10
+            MPY2            dct_32,     mf_32,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_1
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 3rd line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 3
+            LDNDW           *mf++,      mf_32:mf_10     ; 8 bytes of mf line 3
+            LDNDW           *bias++,    bias_32:bias_10 ; 8 bytes of bias line 3
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_32,    dct_32
+            SADD2           dct_10,     bias_10,    dct_10
+            MPY2            dct_32,     mf_32,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_2
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 4th line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 4
+            LDNDW           *mf++,      mf_32:mf_10     ; 8 bytes of mf line 4
+            LDNDW           *bias++,    bias_32:bias_10 ; 8 bytes of bias line 4
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_32,    dct_32
+            SADD2           dct_10,     bias_10,    dct_10
+            MPY2            dct_32,     mf_32,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_3
+            STNDW           dct_32:dct_10, *dct++
+
+            ; normalize non-zero count
+            OR              nz_0,      nz_1,        nz_lo
+            OR              nz_2,      nz_3,        nz_hi
+            OR              nz_lo,     nz_hi,       nz
+            ABS             nz,        nz
+            CMPGT           nz,        k_0,         nz
+
+            .return nz
+            .endproc
+
+;* ======================================================================== *;
+;* quant_4x4_dc_ti -- quant on 4x4 dc block (memory unaligned)              *;
+;* ======================================================================== *;
+		.sect ".text:_quant_4x4_dc_ti"
+        .global _quant_4x4_dc_ti
+_quant_4x4_dc_ti .cproc dct, mf, bias
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            mf_2x, bias_2x
+            .reg            mpy_3:mpy_2
+            .reg            mpy_1:mpy_0
+            .reg            sign_32, sign_10
+            .reg            pos_32,  pos_10
+            .reg            neg_32,  neg_10
+            .reg            nz_0,    nz_1,    nz_2,    nz_3
+            .reg            nz_hi,   nz_lo,   nz,      k_0
+
+            ZERO            k_0                         ; k_0 = 0x00000000
+            PACK2           mf,         mf,         mf_2x
+            PACK2           bias,       bias,       bias_2x
+
+            ; process 1st line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 1
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_2x,    dct_32
+            SADD2           dct_10,     bias_2x,    dct_10
+            MPY2            dct_32,     mf_2x,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_2x,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_0 ; count non-zero dct
+            STNDW           dct_32:dct_10, *dct++        ; store 8 bytes of dct line 1
+
+            ; process 2nd line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 2
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_2x,    dct_32
+            SADD2           dct_10,     bias_2x,    dct_10
+            MPY2            dct_32,     mf_2x,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_2x,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_1
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 3rd line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 3
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_2x,    dct_32
+            SADD2           dct_10,     bias_2x,    dct_10
+            MPY2            dct_32,     mf_2x,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_2x,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_2
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 4th line
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct line 4
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_2x,    dct_32
+            SADD2           dct_10,     bias_2x,    dct_10
+            MPY2            dct_32,     mf_2x,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_2x,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz_3
+            STNDW           dct_32:dct_10, *dct++
+
+            ; normalize non-zero count
+            OR              nz_0,      nz_1,        nz_lo
+            OR              nz_2,      nz_3,        nz_hi
+            OR              nz_lo,     nz_hi,       nz
+            ABS             nz,        nz
+            CMPGT           nz,        k_0,         nz
+
+            .return nz
+            .endproc
+
+;* ======================================================================== *;
+;* quant_2x2_dc_ti -- quant on 2x2 dc block (memory unaligned)              *;
+;* ======================================================================== *;
+		.sect ".text:_quant_2x2_dc_ti"
+        .global _quant_2x2_dc_ti
+_quant_2x2_dc_ti .cproc dct, mf, bias
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            mf_2x, bias_2x
+            .reg            mpy_3:mpy_2
+            .reg            mpy_1:mpy_0
+            .reg            sign_32, sign_10
+            .reg            pos_32,  pos_10
+            .reg            neg_32,  neg_10
+            .reg            nz,      k_0
+
+            ZERO            k_0                         ; k_0 = 0x00000000
+            PACK2           mf,         mf,         mf_2x
+            PACK2           bias,       bias,       bias_2x
+
+            LDNDW           *dct,       dct_32:dct_10   ; 8 bytes of dct
+
+            ; get signs of dct
+            CMPGT2          dct_32,     k_0,        sign_32
+            CMPGT2          dct_10,     k_0,        sign_10
+            XPND2           sign_32,    sign_32
+            XPND2           sign_10,    sign_10
+
+            ; ((bias + |dct|) * mf) >> 16
+            ABS2            dct_32,     dct_32
+            ABS2            dct_10,     dct_10
+            SADD2           dct_32,     bias_2x,    dct_32
+            SADD2           dct_10,     bias_2x,    dct_10
+            MPY2            dct_32,     mf_2x,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_2x,      mpy_1:mpy_0
+            PACKH2          mpy_3,      mpy_2,      dct_32
+            PACKH2          mpy_1,      mpy_0,      dct_10
+
+            ; put signs of dct
+            AND             dct_32,    sign_32,     pos_32
+            AND             dct_10,    sign_10,     pos_10
+            ANDN            dct_32,    sign_32,     neg_32
+            ANDN            dct_10,    sign_10,     neg_10
+            SUB2            pos_32,    neg_32,      dct_32
+            SUB2            pos_10,    neg_10,      dct_10
+            OR              dct_32,    dct_10,      nz   ; count non-zero dct
+            STNDW           dct_32:dct_10, *dct++        ; store 8 bytes of dct
+
+            ; normalize non-zero count
+            ABS             nz,        nz
+            CMPGT           nz,        k_0,         nz
+
+            .return nz
+            .endproc
+
+;* ======================================================================== *;
+;* dequant_4x4_shl_ti -- dequant_shl on 4x4 block (memory unaligned)        *;
+;* NOTE: this function suppose dequant_mf values are grouped as following : *;
+;*       (a, b, a, b), which means mf_32 must be same as mf_10.             *;
+;*       dequant_mf values are defined at x264_dequant4_mf of set.c         *;
+;* ======================================================================== *;
+		.sect ".text:_dequant_4x4_shl_ti"
+        .global _dequant_4x4_shl_ti
+_dequant_4x4_shl_ti .cproc dct, mf, qbits
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            mf_1:mf_0
+            .reg            mf_10
+            .reg            mpy_3:mpy_2
+            .reg            mpy_1:mpy_0
+
+            ; process 1st line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 1
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 1
+            PACK2           mf_1,       mf_0,       mf_10       ; mf_32 is the same as mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2 ; (dct * mf) << qbits
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0 ; (dct * mf) << qbits
+            SHL             mpy_3,      qbits,      mpy_3
+            SHL             mpy_2,      qbits,      mpy_2
+            SHL             mpy_1,      qbits,      mpy_1
+            SHL             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++        ; store 8 bytes of dct
+
+            ; process 2nd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 2
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 2
+            PACK2           mf_1,       mf_0,       mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            SHL             mpy_3,      qbits,      mpy_3
+            SHL             mpy_2,      qbits,      mpy_2
+            SHL             mpy_1,      qbits,      mpy_1
+            SHL             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 3rd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 3
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 3
+            PACK2           mf_1,       mf_0,       mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            SHL             mpy_3,      qbits,      mpy_3
+            SHL             mpy_2,      qbits,      mpy_2
+            SHL             mpy_1,      qbits,      mpy_1
+            SHL             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 4th line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 4
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 4
+            PACK2           mf_1,       mf_0,       mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            SHL             mpy_3,      qbits,      mpy_3
+            SHL             mpy_2,      qbits,      mpy_2
+            SHL             mpy_1,      qbits,      mpy_1
+            SHL             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* dequant_4x4_shr_ti -- dequant_shr on 4x4 block (memory unaligned)        *;
+;* NOTE: this function suppose dequant_mf values are grouped as following : *;
+;*       (a, b, a, b), which means mf_32 must be same as mf_10.             *;
+;*       dequant_mf values are defined at x264_dequant4_mf of set.c         *;
+;* ======================================================================== *;
+		.sect ".text:_dequant_4x4_shr_ti"
+        .global _dequant_4x4_shr_ti
+_dequant_4x4_shr_ti .cproc dct, mf, qbits, bias
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            mf_1:mf_0
+            .reg            mf_10
+            .reg            mpy_3:mpy_2
+            .reg            mpy_1:mpy_0
+
+            ; process 1st line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 1
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 1
+            PACK2           mf_1,       mf_0,       mf_10       ; mf_32 is the same as mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2 ; (dct * mf + bias) >> qbits
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0 ; (dct * mf + bias) >> qbits
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++        ; store 8 bytes of dct
+
+            ; process 2nd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 2
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 2
+            PACK2           mf_1,       mf_0,       mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 3rd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 3
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 3
+            PACK2           mf_1,       mf_0,       mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 4th line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 4
+            LDNDW           *mf++[2],   mf_1:mf_0     ; 8 bytes of dequant_mf line 4
+            PACK2           mf_1,       mf_0,       mf_10
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* dequant_4x4_dc_shl_ti -- dequant_shl on 4x4 dc block (memory unaligned)  *;
+;* ======================================================================== *;
+		.sect ".text:_dequant_4x4_dc_shl_ti"
+        .global _dequant_4x4_dc_shl_ti
+_dequant_4x4_dc_shl_ti .cproc dct, mf, qbits
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            mf_10
+            .reg            mpy_3:mpy_2
+            .reg            mpy_1:mpy_0
+
+            SHL             mf,         qbits,      mf_10 ; mf << qbits
+            PACK2           mf_10,      mf_10,      mf_10
+
+            ; process 1st line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 1
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2 ; dct * mf
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0 ; dct * mf
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++        ; store 8 bytes of dct
+
+            ; process 2nd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 2
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 3rd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 3
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 4th line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 4
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* dequant_4x4_dc_shr_ti -- dequant_shr on 4x4 dc block (memory unaligned)  *;
+;* ======================================================================== *;
+		.sect ".text:_dequant_4x4_dc_shr_ti"
+        .global _dequant_4x4_dc_shr_ti
+_dequant_4x4_dc_shr_ti .cproc dct, mf, qbits, bias
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            mf_10
+            .reg            mpy_3:mpy_2
+            .reg            mpy_1:mpy_0
+
+            PACK2           mf,         mf,         mf_10
+
+            ; process 1st line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 1
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2 ; (dct * mf + bias) >> qbits
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0 ; (dct * mf + bias) >> qbits
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++        ; store 8 bytes of dct
+
+            ; process 2nd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 2
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 3rd line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 3
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            ; process 4th line
+            LDNDW           *dct,       dct_32:dct_10 ; 8 bytes of dct line 4
+            MPY2            dct_32,     mf_10,      mpy_3:mpy_2
+            MPY2            dct_10,     mf_10,      mpy_1:mpy_0
+            ADD             mpy_3,      bias,       mpy_3
+            ADD             mpy_2,      bias,       mpy_2
+            ADD             mpy_1,      bias,       mpy_1
+            ADD             mpy_0,      bias,       mpy_0
+            SHR             mpy_3,      qbits,      mpy_3
+            SHR             mpy_2,      qbits,      mpy_2
+            SHR             mpy_1,      qbits,      mpy_1
+            SHR             mpy_0,      qbits,      mpy_0
+            PACK2           mpy_3,      mpy_2,      dct_32
+            PACK2           mpy_1,      mpy_0,      dct_10
+            STNDW           dct_32:dct_10, *dct++
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_decimate_score16_ti -- decimate score on 16 dct coeffs              *;
+;* ======================================================================== *;
+		.sect ".text:_x264_decimate_score16_ti"
+        .global _x264_decimate_score16_ti
+_x264_decimate_score16_ti .cproc dct
+            .no_mdep
+
+            .reg            dct_32:dct_10, dct_76:dct_54
+            .reg            dct_BA:dct_98, dct_FE:dct_DC
+            .reg            dct_3210, dct_7654, dct_BA98, dct_FEDC
+            .reg            cmp_3210, cmp_7654, cmp_BA98, cmp_FEDC
+            .reg            cmp_all, cmp_hi, cmp_lo, cmp_bin
+            .reg            score, k_0, k_1, run, idx, end, table
+
+            ZERO            score
+            ZERO            k_0
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1
+
+            ; load all 16 dct coeffs and saturated to 1 byte per coeff
+            LDNDW           *dct++,     dct_32:dct_10
+            LDNDW           *dct++,     dct_76:dct_54
+            LDNDW           *dct++,     dct_BA:dct_98
+            LDNDW           *dct++,     dct_FE:dct_DC
+            ABS2            dct_10,     dct_10
+            ABS2            dct_32,     dct_32
+            ABS2            dct_54,     dct_54
+            ABS2            dct_76,     dct_76
+            ABS2            dct_98,     dct_98
+            ABS2            dct_BA,     dct_BA
+            ABS2            dct_DC,     dct_DC
+            ABS2            dct_FE,     dct_FE
+            SPACKU4         dct_32,     dct_10,     dct_3210
+            SPACKU4         dct_76,     dct_54,     dct_7654
+            SPACKU4         dct_BA,     dct_98,     dct_BA98
+            SPACKU4         dct_FE,     dct_DC,     dct_FEDC
+
+            ; if any non-zero coeffs are neither 1 nor -1, return 9 directly
+            CMPGTU4         dct_3210,   k_1,        cmp_3210
+            CMPGTU4         dct_7654,   k_1,        cmp_7654
+            CMPGTU4         dct_BA98,   k_1,        cmp_BA98
+            CMPGTU4         dct_FEDC,   k_1,        cmp_FEDC
+            OR              cmp_7654,   cmp_3210,   cmp_lo
+            OR              cmp_FEDC,   cmp_BA98,   cmp_hi
+            OR              cmp_hi,     cmp_lo,     cmp_all
+  [cmp_all] B               decimate_score16_gt1
+
+            ; if all coeffs are 0, return 0 directly
+            CMPGTU4         dct_3210,   k_0,        cmp_3210
+            CMPGTU4         dct_7654,   k_0,        cmp_7654
+            CMPGTU4         dct_BA98,   k_0,        cmp_BA98
+            CMPGTU4         dct_FEDC,   k_0,        cmp_FEDC
+            SHL             cmp_7654,   4,          cmp_7654
+            SHL             cmp_BA98,   8,          cmp_BA98
+            SHL             cmp_FEDC,   12,         cmp_FEDC
+            OR              cmp_7654,   cmp_3210,   cmp_lo
+            OR              cmp_FEDC,   cmp_BA98,   cmp_hi
+            OR              cmp_hi,     cmp_lo,     cmp_all
+  [!cmp_all] B              decimate_score16_eq0
+
+            ; According to TMS320C64x/C64x+ Instruction Set: EXTU
+            ; The shift left and shift right amounts may also be specified as the ten LSBs
+            ; of the src1 register with cstb being bits 0-4 and csta bits 5-9.
+            MVK             0x1E,       run   ; csta = 0,  cstb = 30 (00000 11110)
+            MVK             0x21F,      idx   ; csta = 16, cstb = 31 (10000 11111)
+            MVK             0x41F,      end   ; csta = 32, cstb = 31 (100000 11111)
+            MVKL            0xE9500000, table ; 3, 2, 2, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+            MVKH            0xE9500000, table ; 11 10 10 01 01 01 00 00 00 00 00 00 00 00 00 00
+
+            ; skip consecutive zeros
+  [cmp_FEDC] B              decimate_score16_skip0
+            ADDK            128,        idx                ; csta += 4
+  [cmp_BA98] B              decimate_score16_skip0
+            ADDK            128,        idx                ; csta += 4
+  [cmp_7654] B              decimate_score16_skip0
+            ADDK            128,        idx                ; csta += 4
+decimate_score16_skip0:
+            EXTU            cmp_all,    idx,       cmp_bin
+            ADDk            32,         idx                ; csta += 1
+  [!cmp_bin] B              decimate_score16_skip0
+
+            ; check loop of non-zero coeffs
+decimate_score16_loop:
+            CMPEQ           idx,        end,       cmp_bin ; check if we reach the end
+  [cmp_bin] B               decimate_score16_end
+            EXTU            cmp_all,    idx,       cmp_bin
+            ADDk            32,         idx                ; csta += 1
+  [cmp_bin] B               decimate_score16_add
+
+            ; bin=0 workflow: accumulate run
+            ADDK            64,         run                ; csta += 2
+            B               decimate_score16_loop
+            ; bin=1 workflow: add score of last non-zero coeff and reset run
+decimate_score16_add:
+            EXTU            table,      run,       run
+            ADD             score,      run,       score
+            MVK             0x1E,       run                ; csta = 0,  cstb = 30 (00000 11110)
+            B               decimate_score16_loop
+
+            ; add score of last non-zero coeff
+decimate_score16_end:
+            EXTU            table,      run,       run
+            ADD             score,      run,       score
+            .return score
+
+            ; special handle for any coeffs > 1 or all coeffs = 0
+decimate_score16_gt1:
+            MVK             9,          score
+decimate_score16_eq0:
+            .return score
+            .endproc
+
+;* ======================================================================== *;
+;* x264_coeff_last16_ti -- last non-zero on 16 dct coeffs                   *;
+;* ======================================================================== *;
+		.sect ".text:_x264_coeff_last16_ti"
+        .global _x264_coeff_last16_ti
+_x264_coeff_last16_ti .cproc dct
+            .no_mdep
+
+            .reg            dct_32:dct_10, dct_76:dct_54
+            .reg            dct_BA:dct_98, dct_FE:dct_DC
+            .reg            dct_3210, dct_7654, dct_BA98, dct_FEDC
+            .reg            last, k_0, i
+
+            ZERO            k_0
+            LDNDW           *dct++,     dct_32:dct_10
+            LDNDW           *dct++,     dct_76:dct_54
+            LDNDW           *dct++,     dct_BA:dct_98
+            LDNDW           *dct++,     dct_FE:dct_DC
+            ABS2            dct_10,     dct_10
+            ABS2            dct_32,     dct_32
+            ABS2            dct_54,     dct_54
+            ABS2            dct_76,     dct_76
+            ABS2            dct_98,     dct_98
+            ABS2            dct_BA,     dct_BA
+            ABS2            dct_DC,     dct_DC
+            ABS2            dct_FE,     dct_FE
+            SPACKU4         dct_32,     dct_10,     dct_3210
+            SPACKU4         dct_76,     dct_54,     dct_7654
+            SPACKU4         dct_BA,     dct_98,     dct_BA98
+            SPACKU4         dct_FE,     dct_DC,     dct_FEDC
+            CMPGTU4         dct_3210,   k_0,        dct_3210
+            CMPGTU4         dct_7654,   k_0,        dct_7654
+            CMPGTU4         dct_BA98,   k_0,        dct_BA98
+            CMPGTU4         dct_FEDC,   k_0,        dct_FEDC
+
+coeff_last16_FEDC:
+ [!dct_FEDC] B              coeff_last16_BA98
+            MVK             12,         last
+            AND             2,          dct_FEDC,   i
+ [i]        MVK             13,         last
+            AND             4,          dct_FEDC,   i
+ [i]        MVK             14,         last
+            AND             8,          dct_FEDC,   i
+ [i]        MVK             15,         last
+            .return last
+
+coeff_last16_BA98:
+ [!dct_BA98] B              coeff_last16_7654
+            MVK             8,          last
+            AND             2,          dct_BA98,   i
+ [i]        MVK             9,          last
+            AND             4,          dct_BA98,   i
+ [i]        MVK             10,         last
+            AND             8,          dct_BA98,   i
+ [i]        MVK             11,         last
+            .return last
+
+coeff_last16_7654:
+ [!dct_7654] B              coeff_last16_3210
+            MVK             4,          last
+            AND             2,          dct_7654,   i
+ [i]        MVK             5,          last
+            AND             4,          dct_7654,   i
+ [i]        MVK             6,          last
+            AND             8,          dct_7654,   i
+ [i]        MVK             7,          last
+            .return last
+
+coeff_last16_3210:
+ [!dct_3210] B              coeff_last16_end
+            MVK             0,          last
+            AND             2,          dct_3210,   i
+ [i]        MVK             1,          last
+            AND             4,          dct_3210,   i
+ [i]        MVK             2,          last
+            AND             8,          dct_3210,   i
+ [i]        MVK             3,          last
+            .return last
+
+coeff_last16_end:
+            MVK             -1,         last
+
+            .return last
+            .endproc

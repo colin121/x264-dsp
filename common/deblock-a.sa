@@ -1,0 +1,1854 @@
+;* ================================================================================================ *;
+;*  deblock-a.sa: deblocking for TI C6000 DSP                                                       *;
+;*                                                                                                  *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*  | cpu cost table of deblocking on DM6467 simulator                                         |    *;
+;*  |------------------------------------------------------------------------------------------|    *;
+;*  | Function         | Optimized cost (cycles) | Pure C cost (cycles)    | Result            |    *;
+;*  |                  |-------------------------|-------------------------|-------------------|    *;
+;*  |                  | Debug      | Release    | Debug      | Release    | Debug   | Release |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | deblock_v_luma   |420(147~701)|145( 76~214)| 4661       |598(157~1200)| 11.1 * |   4.1 * |    *;
+;*  | deblock_h_luma   |553(177~849)|196(108~246)| 5402       |660(156~1199)|  9.8 * |   3.4 * |    *;
+;*  | deblock_v_chroma |330(136~430)|143( 77~178)| 3767       |378(138~516)|  11.4 * |   2.6 * |    *;
+;*  | deblock_h_chroma |330(128~402)|135( 86~158)| 3813       |446(159~569)|  11.5 * |   3.3 * |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | deblock_v_luma_intra   | 770  |221(120~236)| 3669       |722(382~830)|   4.8 * |   3.3 * |    *;
+;*  | deblock_h_luma_intra   | 910  |186         | 3723       |777(407~887)|   4.1 * |   4.2 * |    *;
+;*  | deblock_v_chroma_intra | 358  |163         | 2708       |218         |   7.6   |   1.3   |    *;
+;*  | deblcok_h_chroma_intra | 328  |72          | 2415       |211         |   7.4   |   2.9   |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | deblock_strength | 386        | 93         | 4200       | 1834       |  10.8 * |  19.7 * |    *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*                                                                                                  *;
+;* ================================================================================================ *;
+
+;* ======================================================================== *;
+;* deblock_v_luma_ti -- deblock of luma for one vertical line (16 pixel)    *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_v_luma_ti"
+        .global _deblock_v_luma_ti
+_deblock_v_luma_ti .cproc pix, stride, alpha, beta, tc0_ptr
+            .no_mdep
+
+            .reg            p2, p1, p0, q2, q1, q0
+            .reg            p2_hi, p2_lo, p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q2_hi, q2_lo, q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, p2_p0, q2_q0
+            .reg            pq_mk, pp_mk, qq_mk
+            .reg            pq_avg, pq_avg_hi, pq_avg_lo
+            .reg            dp, dp_hi, dp_lo
+            .reg            dq, dq_hi, dq_lo
+            .reg            d0, d0_hi, d0_lo
+            .reg            tc0_all, tc0, tc1, tc_dp, tc_dq
+            .reg            tc0_pos_hi, tc0_pos_lo, tc0_neg_hi, tc0_neg_lo
+            .reg            tc1_pos_hi, tc1_pos_lo, tc1_neg_hi, tc1_neg_lo
+            .reg            pix_4x, pix_2y, pix_rd, pix_wr, ptr_rd, ptr_wr
+            .reg            db_con, k_0, k_1, k_4, i
+
+            ZERO            k_0                            ; k_0 = 0x00000000
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1                ; k_1 = 0x01010101
+            MVKL            0x00040004, k_4
+            MVKH            0x00040004, k_4                ; k_4 = 0x00040004
+            SHR             stride,     2,          pix_4x ; pix_4x = stride >> 2
+            SHL             stride,     1,          pix_2y ; pix_2y = stride << 1
+            SUB             pix,        pix_2y,     pix_wr ; pix_wr = pix - 2 * stride
+            SUB             pix_wr,     stride,     pix_rd ; pix_rd = pix - 3 * stride
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            PACK2           alpha,      alpha,      alpha
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          beta,       beta,       beta
+            ; load 4 bytes of tc0 before deblocking loop
+            LDNW            *tc0_ptr,   tc0_all
+
+loop_deblock_v_luma: .trip  4,          4,          4
+
+            ; extract corresponding tc0 and test if tc0 < 0
+            PACK2           tc0_all,    tc0_all,    tc0
+            PACKL4          tc0,        tc0,        tc0
+            CMPLT           tc0,        0,          db_con
+   [db_con] B               loop_deblock_v_luma_end
+
+            ; load 4 bytes of pixels (p2, p1, p0, q0, q1, q2)
+            MV              pix_rd,     ptr_rd
+            LDNW            *ptr_rd++[pix_4x], p2
+            LDNW            *ptr_rd++[pix_4x], p1
+            LDNW            *ptr_rd++[pix_4x], p0
+            LDNW            *ptr_rd++[pix_4x], q0
+            LDNW            *ptr_rd++[pix_4x], q1
+            LDNW            *ptr_rd++[pix_4x], q2
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha,      p0_q0 ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0 ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0 ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_v_luma_end
+
+            ; internal pixel deblocking condition
+            SUBABS4         p2,         p0,         p2_p0
+            SUBABS4         q2,         q0,         q2_q0
+            CMPLTU4         p2_p0,      beta,       p2_p0 ; |p2 - p0| < beta
+            CMPLTU4         q2_q0,      beta,       q2_q0 ; |q2 - q0| < beta
+            AND             p2_p0,      pq_mk,      pp_mk ; internal p condition
+            AND             q2_q0,      pq_mk,      qq_mk ; internal q condition
+            XPND4           pp_mk,      pp_mk             ; expand mask of pp
+            XPND4           qq_mk,      qq_mk             ; expand mask of qq
+            XPND4           pq_mk,      pq_mk             ; expand mask of pq
+
+            ; update tc1 if |p2 - p0| < beta or |q2 - q0| < beta
+            AND             pp_mk,      k_1,        tc_dp
+            AND             qq_mk,      k_1,        tc_dq
+            ADD4            tc0,        tc_dp,      tc1
+            ADD4            tc1,        tc_dq,      tc1
+
+            ; unpack tc0, tc1, p0, q0, p1, q1, p2, q2
+            UNPKHU4         tc0,        tc0_pos_hi
+            UNPKLU4         tc0,        tc0_pos_lo
+            UNPKHU4         tc1,        tc1_pos_hi
+            UNPKLU4         tc1,        tc1_pos_lo
+            SSUB2           k_0,        tc0_pos_hi,  tc0_neg_hi
+            SSUB2           k_0,        tc0_pos_lo,  tc0_neg_lo
+            SSUB2           k_0,        tc1_pos_hi,  tc1_neg_hi
+            SSUB2           k_0,        tc1_pos_lo,  tc1_neg_lo
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+            UNPKHU4         p2,         p2_hi
+            UNPKLU4         p2,         p2_lo
+            UNPKHU4         q2,         q2_hi
+            UNPKLU4         q2,         q2_lo
+
+            ; deblock for internal pixel: p1 and q1
+            ; dp = ((p2 + ((p0 + q0 + 1) >> 1)) >> 1) - p1
+            ; dq = ((q2 + ((p0 + q0 + 1) >> 1)) >> 1) - q1
+            AVGU4           p0,         q0,         pq_avg
+            UNPKHU4         pq_avg,     pq_avg_hi
+            UNPKLU4         pq_avg,     pq_avg_lo
+            ADD2            p2_hi,      pq_avg_hi,  dp_hi
+            ADD2            p2_lo,      pq_avg_lo,  dp_lo
+            ADD2            q2_hi,      pq_avg_hi,  dq_hi
+            ADD2            q2_lo,      pq_avg_lo,  dq_lo
+            SHR2            dp_hi,      1,          dp_hi
+            SHR2            dp_lo,      1,          dp_lo
+            SHR2            dq_hi,      1,          dq_hi
+            SHR2            dq_lo,      1,          dq_lo
+            SUB2            dp_hi,      p1_hi,      dp_hi
+            SUB2            dp_lo,      p1_lo,      dp_lo
+            SUB2            dq_hi,      q1_hi,      dq_hi
+            SUB2            dq_lo,      q1_lo,      dq_lo
+            ; limit internal pixel delta: [-tc0, tc0]
+            MIN2            dp_hi,      tc0_pos_hi, dp_hi
+            MIN2            dp_lo,      tc0_pos_lo, dp_lo
+            MIN2            dq_hi,      tc0_pos_hi, dq_hi
+            MIN2            dq_lo,      tc0_pos_lo, dq_lo
+            MAX2            dp_hi,      tc0_neg_hi, dp_hi
+            MAX2            dp_lo,      tc0_neg_lo, dp_lo
+            MAX2            dq_hi,      tc0_neg_hi, dq_hi
+            MAX2            dq_lo,      tc0_neg_lo, dq_lo
+            ; update internal pixel: p1 += dp, q1 += dq
+            PACKL4          dp_hi,      dp_lo,      dp
+            PACKL4          dq_hi,      dq_lo,      dq
+            AND             dp,         pp_mk,      dp
+            AND             dq,         qq_mk,      dq
+            ADD4            p1,         dp,         p1
+            ADD4            q1,         dq,         q1
+
+            ; deblock for edge pixel: p0 and q0
+            ; d0 = (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3
+            SUB2            q0_hi,      p0_hi,      d0_hi
+            SUB2            q0_lo,      p0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      p1_hi,      d0_hi
+            ADD2            d0_lo,      p1_lo,      d0_lo
+            SUB2            d0_hi,      q1_hi,      d0_hi
+            SUB2            d0_lo,      q1_lo,      d0_lo
+            ADD2            d0_hi,      k_4,        d0_hi
+            ADD2            d0_lo,      k_4,        d0_lo
+            SHR2            d0_hi,      3,          d0_hi
+            SHR2            d0_lo,      3,          d0_lo
+            ; limit edge pixel delta: [-tc1, tc1]
+            MIN2            d0_hi,      tc1_pos_hi, d0_hi
+            MIN2            d0_lo,      tc1_pos_lo, d0_lo
+            MAX2            d0_hi,      tc1_neg_hi, d0_hi
+            MAX2            d0_lo,      tc1_neg_lo, d0_lo
+            ; update edge pixel: p0 += d0, q0 -= d0
+            ADD2            p0_hi,      d0_hi,      p0_hi
+            ADD2            p0_lo,      d0_lo,      p0_lo
+            SUB2            q0_hi,      d0_hi,      q0_hi
+            SUB2            q0_lo,      d0_lo,      q0_lo
+            SPACKU4         p0_hi,      p0_lo,      dp
+            SPACKU4         q0_hi,      q0_lo,      dq
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+
+            ; store 4 bytes of filtered pixels (p1, p0, q0, q1)
+            MV              pix_wr,     ptr_wr
+            STNW            p1,         *ptr_wr++[pix_4x]
+            STNW            p0,         *ptr_wr++[pix_4x]
+            STNW            q0,         *ptr_wr++[pix_4x]
+            STNW            q1,         *ptr_wr++[pix_4x]
+
+loop_deblock_v_luma_end:
+            SHRU            tc0_all,    8,          tc0_all  ; tc0_all >>= 8
+            ADDK            4,          pix_rd               ; pix_rd   += 4
+            ADDK            4,          pix_wr               ; pix_wr   += 4
+   [i]      BDEC            loop_deblock_v_luma, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_h_luma_ti -- deblock of luma for one horizontal line (16 pixel)  *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_h_luma_ti"
+        .global _deblock_h_luma_ti
+_deblock_h_luma_ti .cproc pix, stride, alpha, beta, tc0_ptr
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210, pix_1_7654:pix_1_3210
+            .reg            pix_2_7654:pix_2_3210, pix_3_7654:pix_3_3210
+            .reg            pix_0_10, pix_1_10, pix_2_10, pix_3_10
+            .reg            pix_0_32, pix_1_32, pix_2_32, pix_3_32
+            .reg            pix_0_54, pix_1_54, pix_2_54, pix_3_54
+            .reg            pix_lo_11:pix_lo_00, pix_hi_11:pix_hi_00
+            .reg            pix_lo_33:pix_lo_22, pix_hi_33:pix_hi_22
+            .reg            pix_lo_55:pix_lo_44, pix_hi_55:pix_hi_44
+            .reg            p2, p1, p0, q2, q1, q0
+            .reg            p2_hi, p2_lo, p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q2_hi, q2_lo, q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, p2_p0, q2_q0
+            .reg            pq_mk, pp_mk, qq_mk
+            .reg            pq_avg, pq_avg_hi, pq_avg_lo
+            .reg            dp, dp_hi, dp_lo
+            .reg            dq, dq_hi, dq_lo
+            .reg            d0, d0_hi, d0_lo
+            .reg            tc0_all, tc0, tc1, tc_dp, tc_dq
+            .reg            tc0_pos_hi, tc0_pos_lo, tc0_neg_hi, tc0_neg_lo
+            .reg            tc1_pos_hi, tc1_pos_lo, tc1_neg_hi, tc1_neg_lo
+            .reg            pix_4x, pix_8x, pix_4y, pix_rd, pix_wr, ptr_rd, ptr_wr
+            .reg            db_con, k_0, k_1, k_4, i
+
+            ZERO            k_0                            ; k_0 = 0x00000000
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1                ; k_1 = 0x01010101
+            MVKL            0x00040004, k_4
+            MVKH            0x00040004, k_4                ; k_4 = 0x00040004
+            SHR             stride,     2,          pix_4x ; pix_4x = stride >> 2
+            SHR             stride,     3,          pix_8x ; pix_8x = stride >> 3
+            SHL             stride,     2,          pix_4y ; pix_4y = stride << 2
+            SUB             pix,        2,          pix_wr ; pix_wr = pix - 2
+            SUB             pix,        3,          pix_rd ; pix_rd = pix - 3
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            PACK2           alpha,      alpha,      alpha
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          beta,       beta,       beta
+            ; load 4 bytes of tc0 before deblocking loop
+            LDNW            *tc0_ptr,   tc0_all
+
+loop_deblock_h_luma: .trip  4,          4,          4
+
+            ; extract corresponding tc0 and test if tc0 < 0
+            PACK2           tc0_all,    tc0_all,    tc0
+            PACKL4          tc0,        tc0,        tc0
+            CMPLT           tc0,        0,          db_con
+   [db_con] B               loop_deblock_h_luma_end
+
+            ; load 4 bytes of pixels (p2, p1, p0, q0, q1, q2)
+            MV              pix_rd,     ptr_rd
+            LDNDW           *ptr_rd++[pix_8x], pix_0_7654:pix_0_3210
+            LDNDW           *ptr_rd++[pix_8x], pix_1_7654:pix_1_3210
+            LDNDW           *ptr_rd++[pix_8x], pix_2_7654:pix_2_3210
+            LDNDW           *ptr_rd++[pix_8x], pix_3_7654:pix_3_3210
+
+            ; recombine pixels and generate p2, p1, p0, q0, q1, q2
+            UNPKLU4         pix_0_3210, pix_0_10
+            UNPKLU4         pix_1_3210, pix_1_10
+            UNPKLU4         pix_2_3210, pix_2_10
+            UNPKLU4         pix_3_3210, pix_3_10
+            UNPKHU4         pix_0_3210, pix_0_32
+            UNPKHU4         pix_1_3210, pix_1_32
+            UNPKHU4         pix_2_3210, pix_2_32
+            UNPKHU4         pix_3_3210, pix_3_32
+            UNPKLU4         pix_0_7654, pix_0_54
+            UNPKLU4         pix_1_7654, pix_1_54
+            UNPKLU4         pix_2_7654, pix_2_54
+            UNPKLU4         pix_3_7654, pix_3_54
+            DPACK2          pix_1_10,   pix_0_10,   pix_lo_11:pix_lo_00
+            DPACK2          pix_3_10,   pix_2_10,   pix_hi_11:pix_hi_00
+            DPACK2          pix_1_32,   pix_0_32,   pix_lo_33:pix_lo_22
+            DPACK2          pix_3_32,   pix_2_32,   pix_hi_33:pix_hi_22
+            DPACK2          pix_1_54,   pix_0_54,   pix_lo_55:pix_lo_44
+            DPACK2          pix_3_54,   pix_2_54,   pix_hi_55:pix_hi_44
+            PACKL4          pix_hi_00,  pix_lo_00,  p2
+            PACKL4          pix_hi_11,  pix_lo_11,  p1
+            PACKL4          pix_hi_22,  pix_lo_22,  p0
+            PACKL4          pix_hi_33,  pix_lo_33,  q0
+            PACKL4          pix_hi_44,  pix_lo_44,  q1
+            PACKL4          pix_hi_55,  pix_lo_55,  q2
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha,      p0_q0 ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0 ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0 ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_h_luma_end
+
+            ; internal pixel deblocking condition
+            SUBABS4         p2,         p0,         p2_p0
+            SUBABS4         q2,         q0,         q2_q0
+            CMPLTU4         p2_p0,      beta,       p2_p0 ; |p2 - p0| < beta
+            CMPLTU4         q2_q0,      beta,       q2_q0 ; |q2 - q0| < beta
+            AND             p2_p0,      pq_mk,      pp_mk ; internal p condition
+            AND             q2_q0,      pq_mk,      qq_mk ; internal q condition
+            XPND4           pp_mk,      pp_mk             ; expand mask of pp
+            XPND4           qq_mk,      qq_mk             ; expand mask of qq
+            XPND4           pq_mk,      pq_mk             ; expand mask of pq
+
+            ; update tc1 if |p2 - p0| < beta or |q2 - q0| < beta
+            AND             pp_mk,      k_1,        tc_dp
+            AND             qq_mk,      k_1,        tc_dq
+            ADD4            tc0,        tc_dp,      tc1
+            ADD4            tc1,        tc_dq,      tc1
+
+            ; unpack tc0, tc1, p0, q0, p1, q1, p2, q2
+            UNPKHU4         tc0,        tc0_pos_hi
+            UNPKLU4         tc0,        tc0_pos_lo
+            UNPKHU4         tc1,        tc1_pos_hi
+            UNPKLU4         tc1,        tc1_pos_lo
+            SSUB2           k_0,        tc0_pos_hi,  tc0_neg_hi
+            SSUB2           k_0,        tc0_pos_lo,  tc0_neg_lo
+            SSUB2           k_0,        tc1_pos_hi,  tc1_neg_hi
+            SSUB2           k_0,        tc1_pos_lo,  tc1_neg_lo
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+            UNPKHU4         p2,         p2_hi
+            UNPKLU4         p2,         p2_lo
+            UNPKHU4         q2,         q2_hi
+            UNPKLU4         q2,         q2_lo
+
+            ; deblock for internal pixel: p1 and q1
+            ; dp = ((p2 + ((p0 + q0 + 1) >> 1)) >> 1) - p1
+            ; dq = ((q2 + ((p0 + q0 + 1) >> 1)) >> 1) - q1
+            AVGU4           p0,         q0,         pq_avg
+            UNPKHU4         pq_avg,     pq_avg_hi
+            UNPKLU4         pq_avg,     pq_avg_lo
+            ADD2            p2_hi,      pq_avg_hi,  dp_hi
+            ADD2            p2_lo,      pq_avg_lo,  dp_lo
+            ADD2            q2_hi,      pq_avg_hi,  dq_hi
+            ADD2            q2_lo,      pq_avg_lo,  dq_lo
+            SHR2            dp_hi,      1,          dp_hi
+            SHR2            dp_lo,      1,          dp_lo
+            SHR2            dq_hi,      1,          dq_hi
+            SHR2            dq_lo,      1,          dq_lo
+            SUB2            dp_hi,      p1_hi,      dp_hi
+            SUB2            dp_lo,      p1_lo,      dp_lo
+            SUB2            dq_hi,      q1_hi,      dq_hi
+            SUB2            dq_lo,      q1_lo,      dq_lo
+            ; limit internal pixel delta: [-tc0, tc0]
+            MIN2            dp_hi,      tc0_pos_hi, dp_hi
+            MIN2            dp_lo,      tc0_pos_lo, dp_lo
+            MIN2            dq_hi,      tc0_pos_hi, dq_hi
+            MIN2            dq_lo,      tc0_pos_lo, dq_lo
+            MAX2            dp_hi,      tc0_neg_hi, dp_hi
+            MAX2            dp_lo,      tc0_neg_lo, dp_lo
+            MAX2            dq_hi,      tc0_neg_hi, dq_hi
+            MAX2            dq_lo,      tc0_neg_lo, dq_lo
+            ; update internal pixel: p1 += dp, q1 += dq
+            PACKL4          dp_hi,      dp_lo,      dp
+            PACKL4          dq_hi,      dq_lo,      dq
+            AND             dp,         pp_mk,      dp
+            AND             dq,         qq_mk,      dq
+            ADD4            p1,         dp,         p1
+            ADD4            q1,         dq,         q1
+
+            ; deblock for edge pixel: p0 and q0
+            ; d0 = (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3
+            SUB2            q0_hi,      p0_hi,      d0_hi
+            SUB2            q0_lo,      p0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      p1_hi,      d0_hi
+            ADD2            d0_lo,      p1_lo,      d0_lo
+            SUB2            d0_hi,      q1_hi,      d0_hi
+            SUB2            d0_lo,      q1_lo,      d0_lo
+            ADD2            d0_hi,      k_4,        d0_hi
+            ADD2            d0_lo,      k_4,        d0_lo
+            SHR2            d0_hi,      3,          d0_hi
+            SHR2            d0_lo,      3,          d0_lo
+            ; limit edge pixel delta: [-tc1, tc1]
+            MIN2            d0_hi,      tc1_pos_hi, d0_hi
+            MIN2            d0_lo,      tc1_pos_lo, d0_lo
+            MAX2            d0_hi,      tc1_neg_hi, d0_hi
+            MAX2            d0_lo,      tc1_neg_lo, d0_lo
+            ; update edge pixel: p0 += d0, q0 -= d0
+            ADD2            p0_hi,      d0_hi,      p0_hi
+            ADD2            p0_lo,      d0_lo,      p0_lo
+            SUB2            q0_hi,      d0_hi,      q0_hi
+            SUB2            q0_lo,      d0_lo,      q0_lo
+            SPACKU4         p0_hi,      p0_lo,      dp
+            SPACKU4         q0_hi,      q0_lo,      dq
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+
+            ; recombine pixels p1, p0, q0, q1
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+            DPACK2          p0_lo,      p1_lo,      pix_lo_11:pix_lo_00
+            DPACK2          q1_lo,      q0_lo,      pix_hi_11:pix_hi_00
+            DPACK2          p0_hi,      p1_hi,      pix_lo_33:pix_lo_22
+            DPACK2          q1_hi,      q0_hi,      pix_hi_33:pix_hi_22
+            PACKL4          pix_hi_00,  pix_lo_00,  pix_0_3210
+            PACKL4          pix_hi_11,  pix_lo_11,  pix_1_3210
+            PACKL4          pix_hi_22,  pix_lo_22,  pix_2_3210
+            PACKL4          pix_hi_33,  pix_lo_33,  pix_3_3210
+
+            ; store 4 bytes of filtered pixels (p1, p0, q0, q1)
+            MV              pix_wr,     ptr_wr
+            STNW            pix_0_3210, *ptr_wr++[pix_4x]
+            STNW            pix_1_3210, *ptr_wr++[pix_4x]
+            STNW            pix_2_3210, *ptr_wr++[pix_4x]
+            STNW            pix_3_3210, *ptr_wr++[pix_4x]
+
+loop_deblock_h_luma_end:
+            SHRU            tc0_all,    8,          tc0_all  ; tc0_all >>= 8
+            ADD             pix_rd,     pix_4y,     pix_rd   ; pix_rd   += 4 * stride
+            ADD             pix_wr,     pix_4y,     pix_wr   ; pix_wr   += 4 * stride
+   [i]      BDEC            loop_deblock_h_luma, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_v_chroma_ti -- deblock of chroma for one vertical line (16 u/v)  *;
+;*                                                                          *;
+;*        tc[0]     tc[1]     tc[2]     tc[3]                               *;
+;* p1: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* p0: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* q0: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* q1: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_v_chroma_ti"
+        .global _deblock_v_chroma_ti
+_deblock_v_chroma_ti .cproc pix, stride, alpha, beta, tc0_ptr
+            .no_mdep
+
+            .reg            p1, p0, q1, q0
+            .reg            p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, pq_mk
+            .reg            d0, d0_hi, d0_lo, dp, dq
+            .reg            tc0_all, tc0, tc0_pos_hi, tc0_pos_lo, tc0_neg_hi, tc0_neg_lo
+            .reg            pix_4x, pix_rd, pix_wr, ptr_rd, ptr_wr
+            .reg            db_con, k_0, k_4, i
+
+            ZERO            k_0                            ; k_0 = 0x00000000
+            MVKL            0x00040004, k_4
+            MVKH            0x00040004, k_4                ; k_4 = 0x00040004
+            SHR             stride,     2,          pix_4x ; pix_4x = stride >> 2
+            SUB             pix,        stride,     pix_wr ; pix_wr = pix - 1 * stride
+            SUB             pix_wr,     stride,     pix_rd ; pix_rd = pix - 2 * stride
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            PACK2           alpha,      alpha,      alpha
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          beta,       beta,       beta
+            ; load 4 bytes of tc0 before deblocking loop
+            LDNW            *tc0_ptr,   tc0_all
+
+loop_deblock_v_chroma: .trip  4,          4,          4
+
+            ; extract corresponding tc0 and test if tc0 <= 0
+            PACK2           tc0_all,    tc0_all,    tc0
+            PACKL4          tc0,        tc0,        tc0
+            CMPLT           tc0,        1,          db_con
+   [db_con] B               loop_deblock_v_chroma_end
+
+            ; load 4 bytes of pixels (p1, p0, q0, q1)
+            MV              pix_rd,     ptr_rd
+            LDNW            *ptr_rd++[pix_4x], p1
+            LDNW            *ptr_rd++[pix_4x], p0
+            LDNW            *ptr_rd++[pix_4x], q0
+            LDNW            *ptr_rd++[pix_4x], q1
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha,      p0_q0 ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0 ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0 ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            XPND4           pq_mk,      pq_mk             ; expand mask of pq
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_v_chroma_end
+
+            ; unpack tc0, p0, q0, p1, q1
+            UNPKHU4         tc0,        tc0_pos_hi
+            UNPKLU4         tc0,        tc0_pos_lo
+            SSUB2           k_0,        tc0_pos_hi,  tc0_neg_hi
+            SSUB2           k_0,        tc0_pos_lo,  tc0_neg_lo
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+
+            ; deblock for edge pixel: p0 and q0
+            ; d0 = (((q0 - p0) << 2) + (p1 - q1) + 4) >> 3
+            SUB2            q0_hi,      p0_hi,      d0_hi
+            SUB2            q0_lo,      p0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      p1_hi,      d0_hi
+            ADD2            d0_lo,      p1_lo,      d0_lo
+            SUB2            d0_hi,      q1_hi,      d0_hi
+            SUB2            d0_lo,      q1_lo,      d0_lo
+            ADD2            d0_hi,      k_4,        d0_hi
+            ADD2            d0_lo,      k_4,        d0_lo
+            SHR2            d0_hi,      3,          d0_hi
+            SHR2            d0_lo,      3,          d0_lo
+            ; limit edge pixel delta: [-tc0, tc0]
+            MIN2            d0_hi,      tc0_pos_hi, d0_hi
+            MIN2            d0_lo,      tc0_pos_lo, d0_lo
+            MAX2            d0_hi,      tc0_neg_hi, d0_hi
+            MAX2            d0_lo,      tc0_neg_lo, d0_lo
+            ; update edge pixel: p0 += d0, q0 -= d0
+            ADD2            p0_hi,      d0_hi,      p0_hi
+            ADD2            p0_lo,      d0_lo,      p0_lo
+            SUB2            q0_hi,      d0_hi,      q0_hi
+            SUB2            q0_lo,      d0_lo,      q0_lo
+            SPACKU4         p0_hi,      p0_lo,      dp
+            SPACKU4         q0_hi,      q0_lo,      dq
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+
+            ; store 4 bytes of filtered pixels (p0, q0)
+            MV              pix_wr,     ptr_wr
+            STNW            p0,         *ptr_wr++[pix_4x]
+            STNW            q0,         *ptr_wr++[pix_4x]
+
+loop_deblock_v_chroma_end:
+            SHRU            tc0_all,    8,          tc0_all  ; tc0_all >>= 8
+            ADDK            4,          pix_rd               ; pix_rd   += 4
+            ADDK            4,          pix_wr               ; pix_wr   += 4
+   [i]      BDEC            loop_deblock_v_chroma, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_h_chroma_ti -- deblock of chroma for one horizontal line (16 u/v)*;
+;*                                                                          *;
+;*         p1  p0    q0  q1                                                 *;
+;* tc[0] | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;* tc[1] | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;* tc[2] | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;* tc[3] | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_h_chroma_ti"
+        .global _deblock_h_chroma_ti
+_deblock_h_chroma_ti .cproc pix, stride, alpha, beta, tc0_ptr
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210
+            .reg            pix_1_7654:pix_1_3210
+            .reg            p0:p1, q1:q0
+            .reg            p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, pq_mk
+            .reg            d0, d0_hi, d0_lo, dp, dq
+            .reg            tc0_all, tc0, tc0_pos_hi, tc0_pos_lo, tc0_neg_hi, tc0_neg_lo
+            .reg            pix_4x, pix_8x, pix_2y, pix_rd, pix_wr, ptr_rd, ptr_wr
+            .reg            db_con, k_0, k_4, i
+
+            ZERO            k_0                            ; k_0 = 0x00000000
+            MVKL            0x00040004, k_4
+            MVKH            0x00040004, k_4                ; k_4 = 0x00040004
+            SHR             stride,     2,          pix_4x ; pix_4x = stride >> 2
+            SHR             stride,     3,          pix_8x ; pix_8x = stride >> 3
+            SHL             stride,     1,          pix_2y ; pix_2y = stride << 1
+            SUB             pix,        2,          pix_wr ; pix_wr = pix - 1 * 2
+            SUB             pix,        4,          pix_rd ; pix_rd = pix - 2 * 2
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            PACK2           alpha,      alpha,      alpha
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          beta,       beta,       beta
+            ; load 4 bytes of tc0 before deblocking loop
+            LDNW            *tc0_ptr,   tc0_all
+
+loop_deblock_h_chroma: .trip  4,          4,          4
+
+            ; extract corresponding tc0 and test if tc0 <= 0
+            PACK2           tc0_all,    tc0_all,    tc0
+            PACKL4          tc0,        tc0,        tc0
+            CMPLT           tc0,        1,          db_con
+   [db_con] B               loop_deblock_h_chroma_end
+
+            ; load 4 bytes of pixels (p1, p0, q0, q1)
+            MV              pix_rd,     ptr_rd
+            LDNDW           *ptr_rd++[pix_8x], pix_0_7654:pix_0_3210
+            LDNDW           *ptr_rd++[pix_8x], pix_1_7654:pix_1_3210
+            DPACK2          pix_1_3210, pix_0_3210, p0:p1
+            DPACK2          pix_1_7654, pix_0_7654, q1:q0
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha,      p0_q0 ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0 ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0 ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            XPND4           pq_mk,      pq_mk             ; expand mask of pq
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_h_chroma_end
+
+            ; unpack tc0, p0, q0, p1, q1
+            UNPKHU4         tc0,        tc0_pos_hi
+            UNPKLU4         tc0,        tc0_pos_lo
+            SSUB2           k_0,        tc0_pos_hi,  tc0_neg_hi
+            SSUB2           k_0,        tc0_pos_lo,  tc0_neg_lo
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+
+            ; deblock for edge pixel: p0 and q0
+            ; d0 = (((q0 - p0 ) << 2) + (p1 - q1) + 4) >> 3
+            SUB2            q0_hi,      p0_hi,      d0_hi
+            SUB2            q0_lo,      p0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      d0_hi,      d0_hi
+            ADD2            d0_lo,      d0_lo,      d0_lo
+            ADD2            d0_hi,      p1_hi,      d0_hi
+            ADD2            d0_lo,      p1_lo,      d0_lo
+            SUB2            d0_hi,      q1_hi,      d0_hi
+            SUB2            d0_lo,      q1_lo,      d0_lo
+            ADD2            d0_hi,      k_4,        d0_hi
+            ADD2            d0_lo,      k_4,        d0_lo
+            SHR2            d0_hi,      3,          d0_hi
+            SHR2            d0_lo,      3,          d0_lo
+            ; limit edge pixel delta: [-tc0, tc0]
+            MIN2            d0_hi,      tc0_pos_hi, d0_hi
+            MIN2            d0_lo,      tc0_pos_lo, d0_lo
+            MAX2            d0_hi,      tc0_neg_hi, d0_hi
+            MAX2            d0_lo,      tc0_neg_lo, d0_lo
+            ; update edge pixel: p0 += d0, q0 -= d0
+            ADD2            p0_hi,      d0_hi,      p0_hi
+            ADD2            p0_lo,      d0_lo,      p0_lo
+            SUB2            q0_hi,      d0_hi,      q0_hi
+            SUB2            q0_lo,      d0_lo,      q0_lo
+            SPACKU4         p0_hi,      p0_lo,      dp
+            SPACKU4         q0_hi,      q0_lo,      dq
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+
+            ; store 4 bytes of filtered pixels (p0, q0)
+            MV              pix_wr,     ptr_wr
+            DPACK2          q0,         p0,         pix_0_7654:pix_0_3210
+            STNW            pix_0_3210, *ptr_wr++[pix_4x]
+            STNW            pix_0_7654, *ptr_wr++[pix_4x]
+
+loop_deblock_h_chroma_end:
+            SHRU            tc0_all,    8,          tc0_all  ; tc0_all >>= 8
+            ADD             pix_rd,     pix_2y,     pix_rd   ; pix_rd   += 2 * stride
+            ADD             pix_wr,     pix_2y,     pix_wr   ; pix_wr   += 2 * stride
+   [i]      BDEC            loop_deblock_h_chroma, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_v_luma_intra_ti -- deblock of luma for one vertical line         *;
+;*                            (16 pixel) for intra mb (bS == 4)             *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_v_luma_intra_ti"
+        .global _deblock_v_luma_intra_ti
+_deblock_v_luma_intra_ti .cproc pix, stride, alpha, beta
+            .no_mdep
+
+            .reg            p3, p2, p1, p0, q3, q2, q1, q0
+            .reg            p3_hi, p3_lo, p2_hi, p2_lo, p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q3_hi, q3_lo, q2_hi, q2_lo, q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, p2_p0, q2_q0
+            .reg            pq_mk, pq_mk2, pp_mk, qq_mk
+            .reg            dp, dp_hi, dp_lo, dq, dq_hi, dq_lo
+            .reg            dp0, dp0_hi, dp0_lo, dq0, dq0_hi, dq0_lo
+            .reg            dp1, dp1_hi, dp1_lo, dq1, dq1_hi, dq1_lo
+            .reg            dp2, dp2_hi, dp2_lo, dq2, dq2_hi, dq2_lo
+            .reg            p0_q0_hi, p0_q0_lo
+            .reg            p1_q1_hi, p1_q1_lo
+            .reg            p0_p1_hi, p0_p1_lo
+            .reg            q0_q1_hi, q0_q1_lo
+            .reg            p1_p2_hi, p1_p2_lo
+            .reg            q1_q2_hi, q1_q2_lo
+            .reg            p2_p3_hi, p2_p3_lo
+            .reg            q2_q3_hi, q2_q3_lo
+            .reg            p0_q0_p1_q1_hi, p0_q0_p1_q1_lo
+            .reg            p0_p1_p1_q1_hi, p0_p1_p1_q1_lo
+            .reg            q0_q1_p1_q1_hi, q0_q1_p1_q1_lo
+            .reg            p0_q0_p1_p2_hi, p0_q0_p1_p2_lo
+            .reg            p0_q0_q1_q2_hi, p0_q0_q1_q2_lo
+            .reg            p2_p3_p2_p3_hi, p2_p3_p2_p3_lo
+            .reg            q2_q3_q2_q3_hi, q2_q3_q2_q3_lo
+            .reg            pix_4x, pix_4y, pix_rd, pix_wr, ptr_rd, ptr_wr
+            .reg            db_con, k_2, k_4, alpha2, i
+
+            MVKL            0x00020002, k_2
+            MVKH            0x00020002, k_2                ; k_2 = 0x00020002
+            MVKL            0x00040004, k_4
+            MVKH            0x00040004, k_4                ; k_4 = 0x00040004
+            SHR             stride,     2,          pix_4x ; pix_4x = stride >> 2
+            SHL             stride,     2,          pix_4y ; pix_4y = stride << 2
+            SUB             pix,        pix_4y,     pix_rd ; pix_rd = pix - 4 * stride
+            ADD             pix_rd,     stride,     pix_wr ; pix_wr = pix - 3 * stride
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            SHR             alpha,      2,          alpha2
+            ADD             alpha2,     2,          alpha2
+            PACK2           alpha,      alpha,      alpha
+            PACK2           alpha2,     alpha2,     alpha2
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          alpha2,     alpha2,     alpha2
+            PACKL4          beta,       beta,       beta
+
+loop_deblock_v_luma_intra: .trip  4,    4,          4
+            ; load 4 bytes of pixels (p3, p2, p1, p0, q0, q1, q2, q3)
+            MV              pix_rd,     ptr_rd
+            LDNW            *ptr_rd++[pix_4x], p3
+            LDNW            *ptr_rd++[pix_4x], p2
+            LDNW            *ptr_rd++[pix_4x], p1
+            LDNW            *ptr_rd++[pix_4x], p0
+            LDNW            *ptr_rd++[pix_4x], q0
+            LDNW            *ptr_rd++[pix_4x], q1
+            LDNW            *ptr_rd++[pix_4x], q2
+            LDNW            *ptr_rd++[pix_4x], q3
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha2,     pq_mk2 ; |p0 - q0| < (alpha >> 2) + 2
+            CMPLTU4         p0_q0,      alpha,      p0_q0  ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0  ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0  ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk  ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_v_luma_intra_end
+
+            ; internal pixel deblocking condition
+            SUBABS4         p2,         p0,         p2_p0
+            SUBABS4         q2,         q0,         q2_q0
+            CMPLTU4         p2_p0,      beta,       p2_p0  ; |p2 - p0| < beta
+            CMPLTU4         q2_q0,      beta,       q2_q0  ; |q2 - q0| < beta
+            AND             pq_mk2,     pq_mk,      pq_mk2 ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta) && (|p0 - q0| < (alpha >> 2) + 2)
+            AND             p2_p0,      pq_mk2,     pp_mk  ; internal p condition
+            AND             q2_q0,      pq_mk2,     qq_mk  ; internal q condition
+            XPND4           pp_mk,      pp_mk              ; expand pp_mk
+            XPND4           qq_mk,      qq_mk              ; expand qq_mk
+            XPND4           pq_mk,      pq_mk              ; expand pq_mk
+
+            ; unpack p0, q0, p1, q1, p2, q2, p3, q3
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+            UNPKHU4         p2,         p2_hi
+            UNPKLU4         p2,         p2_lo
+            UNPKHU4         q2,         q2_hi
+            UNPKLU4         q2,         q2_lo
+            UNPKHU4         p3,         p3_hi
+            UNPKLU4         p3,         p3_lo
+            UNPKHU4         q3,         q3_hi
+            UNPKLU4         q3,         q3_lo
+            ADD2            p0_hi,      q0_hi,      p0_q0_hi ; (p0 + q0)
+            ADD2            p0_lo,      q0_lo,      p0_q0_lo
+            ADD2            p1_hi,      q1_hi,      p1_q1_hi ; (p1 + q1)
+            ADD2            p1_lo,      q1_lo,      p1_q1_lo
+            ADD2            p0_hi,      p1_hi,      p0_p1_hi ; (p0 + p1)
+            ADD2            p0_lo,      p1_lo,      p0_p1_lo
+            ADD2            q0_hi,      q1_hi,      q0_q1_hi ; (q0 + q1)
+            ADD2            q0_lo,      q1_lo,      q0_q1_lo
+            ADD2            p1_hi,      p2_hi,      p1_p2_hi ; (p1 + p2)
+            ADD2            p1_lo,      p2_lo,      p1_p2_lo
+            ADD2            q1_hi,      q2_hi,      q1_q2_hi ; (q1 + q2)
+            ADD2            q1_lo,      q2_lo,      q1_q2_lo
+            ADD2            p2_hi,      p3_hi,      p2_p3_hi ; (p2 + p3)
+            ADD2            p2_lo,      p3_lo,      p2_p3_lo
+            ADD2            q2_hi,      q3_hi,      q2_q3_hi ; (q2 + q3)
+            ADD2            q2_lo,      q3_lo,      q2_q3_lo
+            ADD2            p0_q0_hi,   p1_q1_hi,   p0_q0_p1_q1_hi ; (p0 + q0 + p1 + q1)
+            ADD2            p0_q0_lo,   p1_q1_lo,   p0_q0_p1_q1_lo
+            ADD2            p0_p1_hi,   p1_q1_hi,   p0_p1_p1_q1_hi ; (p0 + p1 + p1 + q1)
+            ADD2            p0_p1_lo,   p1_q1_lo,   p0_p1_p1_q1_lo
+            ADD2            q0_q1_hi,   p1_q1_hi,   q0_q1_p1_q1_hi ; (q0 + q1 + p1 + q1)
+            ADD2            q0_q1_lo,   p1_q1_lo,   q0_q1_p1_q1_lo
+            ADD2            p0_q0_hi,   p1_p2_hi,   p0_q0_p1_p2_hi ; (p0 + q0 + p1 + p2)
+            ADD2            p0_q0_lo,   p1_p2_lo,   p0_q0_p1_p2_lo
+            ADD2            p0_q0_hi,   q1_q2_hi,   p0_q0_q1_q2_hi ; (p0 + q0 + q1 + q2)
+            ADD2            p0_q0_lo,   q1_q2_lo,   p0_q0_q1_q2_lo
+            ADD2            p2_p3_hi,   p2_p3_hi,   p2_p3_p2_p3_hi ; 2 * (p2 + p3)
+            ADD2            p2_p3_lo,   p2_p3_lo,   p2_p3_p2_p3_lo
+            ADD2            q2_q3_hi,   q2_q3_hi,   q2_q3_q2_q3_hi ; 2 * (q2 + q3)
+            ADD2            q2_q3_lo,   q2_q3_lo,   q2_q3_q2_q3_lo
+
+            ; 4-tap or 5-tap strong filter to fix p2', p1', p0', q0', q1', q2'
+            ; p0' = ( p2 + 2*p1 + 2*p0 + 2*q0 + q1 + 4 ) >> 3
+            ; q0' = ( p1 + 2*p0 + 2*q0 + 2*q1 + q2 + 4 ) >> 3
+            ADD2            p0_q0_p1_p2_hi, p0_q0_p1_q1_hi, dp0_hi
+            ADD2            p0_q0_p1_p2_lo, p0_q0_p1_q1_lo, dp0_lo
+            ADD2            p0_q0_q1_q2_hi, p0_q0_p1_q1_hi, dq0_hi
+            ADD2            p0_q0_q1_q2_lo, p0_q0_p1_q1_lo, dq0_lo
+            ADD2            dp0_hi,     k_4,        dp0_hi
+            ADD2            dp0_lo,     k_4,        dp0_lo
+            ADD2            dq0_hi,     k_4,        dq0_hi
+            ADD2            dq0_lo,     k_4,        dq0_lo
+            SHR2            dp0_hi,     3,          dp0_hi
+            SHR2            dp0_lo,     3,          dp0_lo
+            SHR2            dq0_hi,     3,          dq0_hi
+            SHR2            dq0_lo,     3,          dq0_lo
+            ; p1' = ( p2 + p1 + p0 + q0 + 2 ) >> 2
+            ; q1' = ( p0 + q0 + q1 + q2 + 2 ) >> 2
+            ADD2            p0_q0_p1_p2_hi, k_2,    dp1_hi
+            ADD2            p0_q0_p1_p2_lo, k_2,    dp1_lo
+            ADD2            p0_q0_q1_q2_hi, k_2,    dq1_hi
+            ADD2            p0_q0_q1_q2_lo, k_2,    dq1_lo
+            SHR2            dp1_hi,     2,          dp1_hi
+            SHR2            dp1_lo,     2,          dp1_lo
+            SHR2            dq1_hi,     2,          dq1_hi
+            SHR2            dq1_lo,     2,          dq1_lo
+            ; p2' = ( 2*p3 + 3*p2 + p1 + p0 + q0 + 4 ) >> 3
+            ; q2' = ( 2*q3 + 3*q2 + q1 + q0 + p0 + 4 ) >> 3
+            ADD2            p0_q0_p1_p2_hi, p2_p3_p2_p3_hi, dp2_hi
+            ADD2            p0_q0_p1_p2_lo, p2_p3_p2_p3_lo, dp2_lo
+            ADD2            p0_q0_q1_q2_hi, q2_q3_q2_q3_hi, dq2_hi
+            ADD2            p0_q0_q1_q2_lo, q2_q3_q2_q3_lo, dq2_lo
+            ADD2            dp2_hi,     k_4,        dp2_hi
+            ADD2            dp2_lo,     k_4,        dp2_lo
+            ADD2            dq2_hi,     k_4,        dq2_hi
+            ADD2            dq2_lo,     k_4,        dq2_lo
+            SHR2            dp2_hi,     3,          dp2_hi
+            SHR2            dp2_lo,     3,          dp2_lo
+            SHR2            dq2_hi,     3,          dq2_hi
+            SHR2            dq2_lo,     3,          dq2_lo
+
+            ; 3-tap weak filter to fix p0', q0'
+            ; p0' = ( 2*p1 + p0 + q1 + 2 ) >> 2
+            ; q0' = ( 2*q1 + q0 + p1 + 2 ) >> 2
+            ADD2            p0_p1_p1_q1_hi, k_2,    dp_hi
+            ADD2            p0_p1_p1_q1_lo, k_2,    dp_lo
+            ADD2            q0_q1_p1_q1_hi, k_2,    dq_hi
+            ADD2            q0_q1_p1_q1_lo, k_2,    dq_lo
+            SHR2            dp_hi,      2,          dp_hi
+            SHR2            dp_lo,      2,          dp_lo
+            SHR2            dq_hi,      2,          dq_hi
+            SHR2            dq_lo,      2,          dq_lo
+
+            ; pack p0', q0', p1', q1', p2', q2'
+            SPACKU4         dp0_hi,     dp0_lo,     dp0
+            SPACKU4         dq0_hi,     dq0_lo,     dq0
+            SPACKU4         dp1_hi,     dp1_lo,     dp1
+            SPACKU4         dq1_hi,     dq1_lo,     dq1
+            SPACKU4         dp2_hi,     dp2_lo,     dp2
+            SPACKU4         dq2_hi,     dq2_lo,     dq2
+            SPACKU4         dp_hi,      dp_lo,      dp
+            SPACKU4         dq_hi,      dq_lo,      dq
+
+            ; apply weak filter for pixels (p0, q0)
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+            ; apply strong filter for pixels (p2, p1, p0, q0, q1, q2)
+            ANDN            p0,         pp_mk,      p0
+            ANDN            q0,         qq_mk,      q0
+            ANDN            p1,         pp_mk,      p1
+            ANDN            q1,         qq_mk,      q1
+            ANDN            p2,         pp_mk,      p2
+            ANDN            q2,         qq_mk,      q2
+            AND             dp0,        pp_mk,      dp0
+            AND             dq0,        qq_mk,      dq0
+            AND             dp1,        pp_mk,      dp1
+            AND             dq1,        qq_mk,      dq1
+            AND             dp2,        pp_mk,      dp2
+            AND             dq2,        qq_mk,      dq2
+            ADD4            p0,         dp0,        p0
+            ADD4            q0,         dq0,        q0
+            ADD4            p1,         dp1,        p1
+            ADD4            q1,         dq1,        q1
+            ADD4            p2,         dp2,        p2
+            ADD4            q2,         dq2,        q2
+
+            ; store 4 bytes of filtered pixels (p2, p1, p0, q0, q1, q2)
+            MV              pix_wr,     ptr_wr
+            STNW            p2,         *ptr_wr++[pix_4x]
+            STNW            p1,         *ptr_wr++[pix_4x]
+            STNW            p0,         *ptr_wr++[pix_4x]
+            STNW            q0,         *ptr_wr++[pix_4x]
+            STNW            q1,         *ptr_wr++[pix_4x]
+            STNW            q2,         *ptr_wr++[pix_4x]
+
+loop_deblock_v_luma_intra_end:
+            ADDK            4,          pix_rd               ; pix_rd   += 4
+            ADDK            4,          pix_wr               ; pix_wr   += 4
+   [i]      BDEC            loop_deblock_v_luma_intra, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_h_luma_intra_ti -- deblock of luma for one horizontal line       *;
+;*                            (16 pixel) for intra mb (bS == 4)             *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_h_luma_intra_ti"
+        .global _deblock_h_luma_intra_ti
+_deblock_h_luma_intra_ti .cproc pix, stride, alpha, beta
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210, pix_1_7654:pix_1_3210
+            .reg            pix_2_7654:pix_2_3210, pix_3_7654:pix_3_3210
+            .reg            pix_0_10, pix_1_10, pix_2_10, pix_3_10
+            .reg            pix_0_32, pix_1_32, pix_2_32, pix_3_32
+            .reg            pix_0_54, pix_1_54, pix_2_54, pix_3_54
+            .reg            pix_0_76, pix_1_76, pix_2_76, pix_3_76
+            .reg            pix_lo_11:pix_lo_00, pix_hi_11:pix_hi_00
+            .reg            pix_lo_33:pix_lo_22, pix_hi_33:pix_hi_22
+            .reg            pix_lo_55:pix_lo_44, pix_hi_55:pix_hi_44
+            .reg            pix_lo_77:pix_lo_66, pix_hi_77:pix_hi_66
+            .reg            p3, p2, p1, p0, q3, q2, q1, q0
+            .reg            p3_hi, p3_lo, p2_hi, p2_lo, p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q3_hi, q3_lo, q2_hi, q2_lo, q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, p2_p0, q2_q0
+            .reg            pq_mk, pq_mk2, pp_mk, qq_mk
+            .reg            dp, dp_hi, dp_lo, dq, dq_hi, dq_lo
+            .reg            dp0, dp0_hi, dp0_lo, dq0, dq0_hi, dq0_lo
+            .reg            dp1, dp1_hi, dp1_lo, dq1, dq1_hi, dq1_lo
+            .reg            dp2, dp2_hi, dp2_lo, dq2, dq2_hi, dq2_lo
+            .reg            p0_q0_hi, p0_q0_lo
+            .reg            p1_q1_hi, p1_q1_lo
+            .reg            p0_p1_hi, p0_p1_lo
+            .reg            q0_q1_hi, q0_q1_lo
+            .reg            p1_p2_hi, p1_p2_lo
+            .reg            q1_q2_hi, q1_q2_lo
+            .reg            p2_p3_hi, p2_p3_lo
+            .reg            q2_q3_hi, q2_q3_lo
+            .reg            p0_q0_p1_q1_hi, p0_q0_p1_q1_lo
+            .reg            p0_p1_p1_q1_hi, p0_p1_p1_q1_lo
+            .reg            q0_q1_p1_q1_hi, q0_q1_p1_q1_lo
+            .reg            p0_q0_p1_p2_hi, p0_q0_p1_p2_lo
+            .reg            p0_q0_q1_q2_hi, p0_q0_q1_q2_lo
+            .reg            p2_p3_p2_p3_hi, p2_p3_p2_p3_lo
+            .reg            q2_q3_q2_q3_hi, q2_q3_q2_q3_lo
+            .reg            pix_8x, pix_4y, ptr
+            .reg            db_con, k_2, k_4, alpha2, i
+
+            MVKL            0x00020002, k_2
+            MVKH            0x00020002, k_2                ; k_2 = 0x00020002
+            MVKL            0x00040004, k_4
+            MVKH            0x00040004, k_4                ; k_4 = 0x00040004
+            SHR             stride,     3,          pix_8x ; pix_8x = stride >> 3
+            SHL             stride,     2,          pix_4y ; pix_4y = stride << 2
+            SUB             pix,        4,          pix    ; pix = pix - 4
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            SHR             alpha,      2,          alpha2
+            ADD             alpha2,     2,          alpha2
+            PACK2           alpha,      alpha,      alpha
+            PACK2           alpha2,     alpha2,     alpha2
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          alpha2,     alpha2,     alpha2
+            PACKL4          beta,       beta,       beta
+
+loop_deblock_h_luma_intra: .trip  4,    4,          4
+
+            ; load 4 bytes of pixels (p3, p2, p1, p0, q0, q1, q2, q3)
+            MV              pix,        ptr
+            LDNDW           *ptr++[pix_8x], pix_0_7654:pix_0_3210
+            LDNDW           *ptr++[pix_8x], pix_1_7654:pix_1_3210
+            LDNDW           *ptr++[pix_8x], pix_2_7654:pix_2_3210
+            LDNDW           *ptr++[pix_8x], pix_3_7654:pix_3_3210
+
+            ; recombine pixels and generate p1, p0, q0, q1
+            UNPKHU4         pix_0_3210, pix_0_32
+            UNPKHU4         pix_1_3210, pix_1_32
+            UNPKHU4         pix_2_3210, pix_2_32
+            UNPKHU4         pix_3_3210, pix_3_32
+            UNPKLU4         pix_0_7654, pix_0_54
+            UNPKLU4         pix_1_7654, pix_1_54
+            UNPKLU4         pix_2_7654, pix_2_54
+            UNPKLU4         pix_3_7654, pix_3_54
+            DPACK2          pix_1_32,   pix_0_32,   pix_lo_33:pix_lo_22
+            DPACK2          pix_3_32,   pix_2_32,   pix_hi_33:pix_hi_22
+            DPACK2          pix_1_54,   pix_0_54,   pix_lo_55:pix_lo_44
+            DPACK2          pix_3_54,   pix_2_54,   pix_hi_55:pix_hi_44
+            PACKL4          pix_hi_22,  pix_lo_22,  p1
+            PACKL4          pix_hi_33,  pix_lo_33,  p0
+            PACKL4          pix_hi_44,  pix_lo_44,  q0
+            PACKL4          pix_hi_55,  pix_lo_55,  q1
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha2,     pq_mk2 ; |p0 - q0| < (alpha >> 2) + 2
+            CMPLTU4         p0_q0,      alpha,      p0_q0  ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0  ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0  ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk  ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_h_luma_intra_end
+
+            ; recombine pixels and generate p3, p2, q2, q3
+            UNPKLU4         pix_0_3210, pix_0_10
+            UNPKLU4         pix_1_3210, pix_1_10
+            UNPKLU4         pix_2_3210, pix_2_10
+            UNPKLU4         pix_3_3210, pix_3_10
+            UNPKHU4         pix_0_7654, pix_0_76
+            UNPKHU4         pix_1_7654, pix_1_76
+            UNPKHU4         pix_2_7654, pix_2_76
+            UNPKHU4         pix_3_7654, pix_3_76
+            DPACK2          pix_1_10,   pix_0_10,   pix_lo_11:pix_lo_00
+            DPACK2          pix_3_10,   pix_2_10,   pix_hi_11:pix_hi_00
+            DPACK2          pix_1_76,   pix_0_76,   pix_lo_77:pix_lo_66
+            DPACK2          pix_3_76,   pix_2_76,   pix_hi_77:pix_hi_66
+            PACKL4          pix_hi_00,  pix_lo_00,  p3
+            PACKL4          pix_hi_11,  pix_lo_11,  p2
+            PACKL4          pix_hi_66,  pix_lo_66,  q2
+            PACKL4          pix_hi_77,  pix_lo_77,  q3
+
+            ; internal pixel deblocking condition
+            SUBABS4         p2,         p0,         p2_p0
+            SUBABS4         q2,         q0,         q2_q0
+            CMPLTU4         p2_p0,      beta,       p2_p0  ; |p2 - p0| < beta
+            CMPLTU4         q2_q0,      beta,       q2_q0  ; |q2 - q0| < beta
+            AND             pq_mk2,     pq_mk,      pq_mk2 ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta) && (|p0 - q0| < (alpha >> 2) + 2)
+            AND             p2_p0,      pq_mk2,     pp_mk  ; internal p condition
+            AND             q2_q0,      pq_mk2,     qq_mk  ; internal q condition
+            XPND4           pp_mk,      pp_mk              ; expand pp_mk
+            XPND4           qq_mk,      qq_mk              ; expand qq_mk
+            XPND4           pq_mk,      pq_mk              ; expand pq_mk
+
+            ; unpack p0, q0, p1, q1, p2, q2, p3, q3
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+            UNPKHU4         p2,         p2_hi
+            UNPKLU4         p2,         p2_lo
+            UNPKHU4         q2,         q2_hi
+            UNPKLU4         q2,         q2_lo
+            UNPKHU4         p3,         p3_hi
+            UNPKLU4         p3,         p3_lo
+            UNPKHU4         q3,         q3_hi
+            UNPKLU4         q3,         q3_lo
+            ADD2            p0_hi,      q0_hi,      p0_q0_hi ; (p0 + q0)
+            ADD2            p0_lo,      q0_lo,      p0_q0_lo
+            ADD2            p1_hi,      q1_hi,      p1_q1_hi ; (p1 + q1)
+            ADD2            p1_lo,      q1_lo,      p1_q1_lo
+            ADD2            p0_hi,      p1_hi,      p0_p1_hi ; (p0 + p1)
+            ADD2            p0_lo,      p1_lo,      p0_p1_lo
+            ADD2            q0_hi,      q1_hi,      q0_q1_hi ; (q0 + q1)
+            ADD2            q0_lo,      q1_lo,      q0_q1_lo
+            ADD2            p1_hi,      p2_hi,      p1_p2_hi ; (p1 + p2)
+            ADD2            p1_lo,      p2_lo,      p1_p2_lo
+            ADD2            q1_hi,      q2_hi,      q1_q2_hi ; (q1 + q2)
+            ADD2            q1_lo,      q2_lo,      q1_q2_lo
+            ADD2            p2_hi,      p3_hi,      p2_p3_hi ; (p2 + p3)
+            ADD2            p2_lo,      p3_lo,      p2_p3_lo
+            ADD2            q2_hi,      q3_hi,      q2_q3_hi ; (q2 + q3)
+            ADD2            q2_lo,      q3_lo,      q2_q3_lo
+            ADD2            p0_q0_hi,   p1_q1_hi,   p0_q0_p1_q1_hi ; (p0 + q0 + p1 + q1)
+            ADD2            p0_q0_lo,   p1_q1_lo,   p0_q0_p1_q1_lo
+            ADD2            p0_p1_hi,   p1_q1_hi,   p0_p1_p1_q1_hi ; (p0 + p1 + p1 + q1)
+            ADD2            p0_p1_lo,   p1_q1_lo,   p0_p1_p1_q1_lo
+            ADD2            q0_q1_hi,   p1_q1_hi,   q0_q1_p1_q1_hi ; (q0 + q1 + p1 + q1)
+            ADD2            q0_q1_lo,   p1_q1_lo,   q0_q1_p1_q1_lo
+            ADD2            p0_q0_hi,   p1_p2_hi,   p0_q0_p1_p2_hi ; (p0 + q0 + p1 + p2)
+            ADD2            p0_q0_lo,   p1_p2_lo,   p0_q0_p1_p2_lo
+            ADD2            p0_q0_hi,   q1_q2_hi,   p0_q0_q1_q2_hi ; (p0 + q0 + q1 + q2)
+            ADD2            p0_q0_lo,   q1_q2_lo,   p0_q0_q1_q2_lo
+            ADD2            p2_p3_hi,   p2_p3_hi,   p2_p3_p2_p3_hi ; 2 * (p2 + p3)
+            ADD2            p2_p3_lo,   p2_p3_lo,   p2_p3_p2_p3_lo
+            ADD2            q2_q3_hi,   q2_q3_hi,   q2_q3_q2_q3_hi ; 2 * (q2 + q3)
+            ADD2            q2_q3_lo,   q2_q3_lo,   q2_q3_q2_q3_lo
+
+            ; 4-tap or 5-tap strong filter to fix p2', p1', p0', q0', q1', q2'
+            ; p0' = ( p2 + 2*p1 + 2*p0 + 2*q0 + q1 + 4 ) >> 3
+            ; q0' = ( p1 + 2*p0 + 2*q0 + 2*q1 + q2 + 4 ) >> 3
+            ADD2            p0_q0_p1_p2_hi, p0_q0_p1_q1_hi, dp0_hi
+            ADD2            p0_q0_p1_p2_lo, p0_q0_p1_q1_lo, dp0_lo
+            ADD2            p0_q0_q1_q2_hi, p0_q0_p1_q1_hi, dq0_hi
+            ADD2            p0_q0_q1_q2_lo, p0_q0_p1_q1_lo, dq0_lo
+            ADD2            dp0_hi,     k_4,        dp0_hi
+            ADD2            dp0_lo,     k_4,        dp0_lo
+            ADD2            dq0_hi,     k_4,        dq0_hi
+            ADD2            dq0_lo,     k_4,        dq0_lo
+            SHR2            dp0_hi,     3,          dp0_hi
+            SHR2            dp0_lo,     3,          dp0_lo
+            SHR2            dq0_hi,     3,          dq0_hi
+            SHR2            dq0_lo,     3,          dq0_lo
+            ; p1' = ( p2 + p1 + p0 + q0 + 2 ) >> 2
+            ; q1' = ( p0 + q0 + q1 + q2 + 2 ) >> 2
+            ADD2            p0_q0_p1_p2_hi, k_2,    dp1_hi
+            ADD2            p0_q0_p1_p2_lo, k_2,    dp1_lo
+            ADD2            p0_q0_q1_q2_hi, k_2,    dq1_hi
+            ADD2            p0_q0_q1_q2_lo, k_2,    dq1_lo
+            SHR2            dp1_hi,     2,          dp1_hi
+            SHR2            dp1_lo,     2,          dp1_lo
+            SHR2            dq1_hi,     2,          dq1_hi
+            SHR2            dq1_lo,     2,          dq1_lo
+            ; p2' = ( 2*p3 + 3*p2 + p1 + p0 + q0 + 4 ) >> 3
+            ; q2' = ( 2*q3 + 3*q2 + q1 + q0 + p0 + 4 ) >> 3
+            ADD2            p0_q0_p1_p2_hi, p2_p3_p2_p3_hi, dp2_hi
+            ADD2            p0_q0_p1_p2_lo, p2_p3_p2_p3_lo, dp2_lo
+            ADD2            p0_q0_q1_q2_hi, q2_q3_q2_q3_hi, dq2_hi
+            ADD2            p0_q0_q1_q2_lo, q2_q3_q2_q3_lo, dq2_lo
+            ADD2            dp2_hi,     k_4,        dp2_hi
+            ADD2            dp2_lo,     k_4,        dp2_lo
+            ADD2            dq2_hi,     k_4,        dq2_hi
+            ADD2            dq2_lo,     k_4,        dq2_lo
+            SHR2            dp2_hi,     3,          dp2_hi
+            SHR2            dp2_lo,     3,          dp2_lo
+            SHR2            dq2_hi,     3,          dq2_hi
+            SHR2            dq2_lo,     3,          dq2_lo
+
+            ; 3-tap weak filter to fix p0', q0'
+            ; p0' = ( 2*p1 + p0 + q1 + 2 ) >> 2
+            ; q0' = ( 2*q1 + q0 + p1 + 2 ) >> 2
+            ADD2            p0_p1_p1_q1_hi, k_2,    dp_hi
+            ADD2            p0_p1_p1_q1_lo, k_2,    dp_lo
+            ADD2            q0_q1_p1_q1_hi, k_2,    dq_hi
+            ADD2            q0_q1_p1_q1_lo, k_2,    dq_lo
+            SHR2            dp_hi,      2,          dp_hi
+            SHR2            dp_lo,      2,          dp_lo
+            SHR2            dq_hi,      2,          dq_hi
+            SHR2            dq_lo,      2,          dq_lo
+
+            ; pack p0', q0', p1', q1', p2', q2'
+            SPACKU4         dp0_hi,     dp0_lo,     dp0
+            SPACKU4         dq0_hi,     dq0_lo,     dq0
+            SPACKU4         dp1_hi,     dp1_lo,     dp1
+            SPACKU4         dq1_hi,     dq1_lo,     dq1
+            SPACKU4         dp2_hi,     dp2_lo,     dp2
+            SPACKU4         dq2_hi,     dq2_lo,     dq2
+            SPACKU4         dp_hi,      dp_lo,      dp
+            SPACKU4         dq_hi,      dq_lo,      dq
+
+            ; apply weak filter for pixels (p0, q0)
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+            ; apply strong filter for pixels (p2, p1, p0, q0, q1, q2)
+            ANDN            p0,         pp_mk,      p0
+            ANDN            q0,         qq_mk,      q0
+            ANDN            p1,         pp_mk,      p1
+            ANDN            q1,         qq_mk,      q1
+            ANDN            p2,         pp_mk,      p2
+            ANDN            q2,         qq_mk,      q2
+            AND             dp0,        pp_mk,      dp0
+            AND             dq0,        qq_mk,      dq0
+            AND             dp1,        pp_mk,      dp1
+            AND             dq1,        qq_mk,      dq1
+            AND             dp2,        pp_mk,      dp2
+            AND             dq2,        qq_mk,      dq2
+            ADD4            p0,         dp0,        p0
+            ADD4            q0,         dq0,        q0
+            ADD4            p1,         dp1,        p1
+            ADD4            q1,         dq1,        q1
+            ADD4            p2,         dp2,        p2
+            ADD4            q2,         dq2,        q2
+
+            ; recombine pixels p2, p1, p0, q0, q1, q2
+            UNPKHU4         p2,         p2_hi
+            UNPKLU4         p2,         p2_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+            UNPKHU4         q2,         q2_hi
+            UNPKLU4         q2,         q2_lo
+            DPACK2          p2_lo,      p3_lo,      pix_lo_11:pix_lo_00
+            DPACK2          p0_lo,      p1_lo,      pix_hi_11:pix_hi_00
+            DPACK2          p2_hi,      p3_hi,      pix_lo_33:pix_lo_22
+            DPACK2          p0_hi,      p1_hi,      pix_hi_33:pix_hi_22
+            PACKL4          pix_hi_00,  pix_lo_00,  pix_0_3210
+            PACKL4          pix_hi_11,  pix_lo_11,  pix_1_3210
+            PACKL4          pix_hi_22,  pix_lo_22,  pix_2_3210
+            PACKL4          pix_hi_33,  pix_lo_33,  pix_3_3210
+            DPACK2          q1_lo,      q0_lo,      pix_lo_11:pix_lo_00
+            DPACK2          q3_lo,      q2_lo,      pix_hi_11:pix_hi_00
+            DPACK2          q1_hi,      q0_hi,      pix_lo_33:pix_lo_22
+            DPACK2          q3_hi,      q2_hi,      pix_hi_33:pix_hi_22
+            PACKL4          pix_hi_00,  pix_lo_00,  pix_0_7654
+            PACKL4          pix_hi_11,  pix_lo_11,  pix_1_7654
+            PACKL4          pix_hi_22,  pix_lo_22,  pix_2_7654
+            PACKL4          pix_hi_33,  pix_lo_33,  pix_3_7654
+
+            ; store 4 bytes of filtered pixels (p3, p2, p1, p0, q0, q1, q2, q3)
+            MV              pix,        ptr
+            STNDW           pix_0_7654:pix_0_3210, *ptr++[pix_8x]
+            STNDW           pix_1_7654:pix_1_3210, *ptr++[pix_8x]
+            STNDW           pix_2_7654:pix_2_3210, *ptr++[pix_8x]
+            STNDW           pix_3_7654:pix_3_3210, *ptr++[pix_8x]
+
+loop_deblock_h_luma_intra_end:
+            ADD             pix,       pix_4y,      pix   ; pix += 4 * stride
+   [i]      BDEC            loop_deblock_h_luma_intra, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_v_chroma_intra_ti -- deblock of chroma for one vertical line     *;
+;*                              (16 u/v) for intra mb (bS == 4)             *;
+;*                                                                          *;
+;* p1: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* p0: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* q0: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* q1: | U V U V | U V U V | U V U V | U V U V |                            *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_v_chroma_intra_ti"
+        .global _deblock_v_chroma_intra_ti
+_deblock_v_chroma_intra_ti .cproc pix, stride, alpha, beta
+            .no_mdep
+
+            .reg            p1, p0, q1, q0
+            .reg            p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, pq_mk
+            .reg            dp, dq, dp_hi, dp_lo, dq_hi, dq_lo
+            .reg            pix_4x, pix_rd, pix_wr, ptr_rd, ptr_wr
+            .reg            db_con, k_2, i
+
+            MVKL            0x00020002, k_2
+            MVKH            0x00020002, k_2                ; k_2 = 0x00020002
+            SHR             stride,     2,          pix_4x ; pix_4x = stride >> 2
+            SUB             pix,        stride,     pix_wr ; pix_wr = pix - 1 * stride
+            SUB             pix_wr,     stride,     pix_rd ; pix_rd = pix - 2 * stride
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            PACK2           alpha,      alpha,      alpha
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          beta,       beta,       beta
+
+loop_deblock_v_chroma_intra: .trip  4,  4,          4
+            ; load 4 bytes of pixels (p1, p0, q0, q1)
+            MV              pix_rd,     ptr_rd
+            LDNW            *ptr_rd++[pix_4x], p1
+            LDNW            *ptr_rd++[pix_4x], p0
+            LDNW            *ptr_rd++[pix_4x], q0
+            LDNW            *ptr_rd++[pix_4x], q1
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha,      p0_q0 ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0 ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0 ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            XPND4           pq_mk,      pq_mk             ; expand mask of pq
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_v_chroma_intra_end
+
+            ; unpack p0, q0, p1, q1
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+
+            ; deblock for edge pixel: p0 and q0
+            ; p0' = (2*p1 + p0 + q1 + 2) >> 2
+            ; q0' = (2*q1 + q0 + p1 + 2) >> 2
+            ADD2            p1_hi,      p1_hi,      dp_hi
+            ADD2            p1_lo,      p1_lo,      dp_lo
+            ADD2            q1_hi,      q1_hi,      dq_hi
+            ADD2            q1_lo,      q1_lo,      dq_lo
+            ADD2            dp_hi,      p0_hi,      dp_hi
+            ADD2            dp_lo,      p0_lo,      dp_lo
+            ADD2            dq_hi,      q0_hi,      dq_hi
+            ADD2            dq_lo,      q0_lo,      dq_lo
+            ADD2            dp_hi,      q1_hi,      dp_hi
+            ADD2            dp_lo,      q1_lo,      dp_lo
+            ADD2            dq_hi,      p1_hi,      dq_hi
+            ADD2            dq_lo,      p1_lo,      dq_lo
+            ADD2            dp_hi,      k_2,        dp_hi
+            ADD2            dp_lo,      k_2,        dp_lo
+            ADD2            dq_hi,      k_2,        dq_hi
+            ADD2            dq_lo,      k_2,        dq_lo
+            SHR2            dp_hi,      2,          dp_hi
+            SHR2            dp_lo,      2,          dp_lo
+            SHR2            dq_hi,      2,          dq_hi
+            SHR2            dq_lo,      2,          dq_lo
+            SPACKU4         dp_hi,      dp_lo,      dp
+            SPACKU4         dq_hi,      dq_lo,      dq
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+
+            ; store 4 bytes of filtered pixels (p0, q0)
+            MV              pix_wr,     ptr_wr
+            STNW            p0,         *ptr_wr++[pix_4x]
+            STNW            q0,         *ptr_wr++[pix_4x]
+
+loop_deblock_v_chroma_intra_end:
+            ADDK            4,          pix_rd               ; pix_rd   += 4
+            ADDK            4,          pix_wr               ; pix_wr   += 4
+   [i]      BDEC            loop_deblock_v_chroma_intra, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_h_chroma_intra_ti -- deblock of chroma for one horizontal line   *;
+;*                              (16 u/v) for intra mb (bS == 4)             *;
+;*                                                                          *;
+;*         p1  p0    q0  q1                                                 *;
+;*       | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;*       | U V U V | U V U V |                                              *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_h_chroma_intra_ti"
+        .global _deblock_h_chroma_intra_ti
+_deblock_h_chroma_intra_ti .cproc pix, stride, alpha, beta
+            .no_mdep
+
+            .reg            pix_0_7654:pix_0_3210
+            .reg            pix_1_7654:pix_1_3210
+            .reg            p0:p1, q1:q0
+            .reg            p1_hi, p1_lo, p0_hi, p0_lo
+            .reg            q1_hi, q1_lo, q0_hi, q0_lo
+            .reg            p0_q0, p1_p0, q1_q0, pq_mk
+            .reg            dp, dq, dp_hi, dp_lo, dq_hi, dq_lo
+            .reg            pix_4x, pix_8x, pix_2y, pix_rd, pix_wr, ptr_rd, ptr_wr
+            .reg            db_con, k_2, i
+
+            MVKL            0x00020002, k_2
+            MVKH            0x00020002, k_2                ; k_2 = 0x00020002
+            SHR             stride,     2,          pix_4x ; pix_4x = stride >> 2
+            SHR             stride,     3,          pix_8x ; pix_8x = stride >> 3
+            SHL             stride,     1,          pix_2y ; pix_2y = stride << 1
+            SUB             pix,        2,          pix_wr ; pix_wr = pix - 1 * 2
+            SUB             pix,        4,          pix_rd ; pix_rd = pix - 2 * 2
+            MVK             3,          i                  ; i = 3
+
+            ; expand alpha and beta
+            PACK2           alpha,      alpha,      alpha
+            PACK2           beta,       beta,       beta
+            PACKL4          alpha,      alpha,      alpha
+            PACKL4          beta,       beta,       beta
+
+loop_deblock_h_chroma_intra: .trip  4,  4,          4
+            ; load 4 bytes of pixels (p1, p0, q0, q1)
+            MV              pix_rd,     ptr_rd
+            LDNDW           *ptr_rd++[pix_8x], pix_0_7654:pix_0_3210
+            LDNDW           *ptr_rd++[pix_8x], pix_1_7654:pix_1_3210
+            DPACK2          pix_1_3210, pix_0_3210, p0:p1
+            DPACK2          pix_1_7654, pix_0_7654, q1:q0
+
+            ; edge pixel deblocking condition
+            SUBABS4         p0,         q0,         p0_q0
+            SUBABS4         p1,         p0,         p1_p0
+            SUBABS4         q1,         q0,         q1_q0
+            CMPLTU4         p0_q0,      alpha,      p0_q0 ; |p0 - q0| < alpha
+            CMPLTU4         p1_p0,      beta,       p1_p0 ; |p1 - p0| < beta
+            CMPLTU4         q1_q0,      beta,       q1_q0 ; |q1 - q0| < beta
+            AND             p1_p0,      q1_q0,      pq_mk
+            AND             p0_q0,      pq_mk,      pq_mk ; (|p0 - q0| < alpha && |p1 - p0| < beta && |q1 - q0| < beta)
+            XPND4           pq_mk,      pq_mk             ; expand mask of pq
+            CMPEQ           pq_mk,      0,          db_con
+   [db_con] B               loop_deblock_h_chroma_intra_end
+
+            ; unpack p0, q0, p1, q1
+            UNPKHU4         p0,         p0_hi
+            UNPKLU4         p0,         p0_lo
+            UNPKHU4         q0,         q0_hi
+            UNPKLU4         q0,         q0_lo
+            UNPKHU4         p1,         p1_hi
+            UNPKLU4         p1,         p1_lo
+            UNPKHU4         q1,         q1_hi
+            UNPKLU4         q1,         q1_lo
+
+            ; deblock for edge pixel: p0 and q0
+            ; p0' = (2*p1 + p0 + q1 + 2) >> 2
+            ; q0' = (2*q1 + q0 + p1 + 2) >> 2
+            ADD2            p1_hi,      p1_hi,      dp_hi
+            ADD2            p1_lo,      p1_lo,      dp_lo
+            ADD2            q1_hi,      q1_hi,      dq_hi
+            ADD2            q1_lo,      q1_lo,      dq_lo
+            ADD2            dp_hi,      p0_hi,      dp_hi
+            ADD2            dp_lo,      p0_lo,      dp_lo
+            ADD2            dq_hi,      q0_hi,      dq_hi
+            ADD2            dq_lo,      q0_lo,      dq_lo
+            ADD2            dp_hi,      q1_hi,      dp_hi
+            ADD2            dp_lo,      q1_lo,      dp_lo
+            ADD2            dq_hi,      p1_hi,      dq_hi
+            ADD2            dq_lo,      p1_lo,      dq_lo
+            ADD2            dp_hi,      k_2,        dp_hi
+            ADD2            dp_lo,      k_2,        dp_lo
+            ADD2            dq_hi,      k_2,        dq_hi
+            ADD2            dq_lo,      k_2,        dq_lo
+            SHR2            dp_hi,      2,          dp_hi
+            SHR2            dp_lo,      2,          dp_lo
+            SHR2            dq_hi,      2,          dq_hi
+            SHR2            dq_lo,      2,          dq_lo
+            SPACKU4         dp_hi,      dp_lo,      dp
+            SPACKU4         dq_hi,      dq_lo,      dq
+            ANDN            p0,         pq_mk,      p0
+            ANDN            q0,         pq_mk,      q0
+            AND             dp,         pq_mk,      dp
+            AND             dq,         pq_mk,      dq
+            ADD4            p0,         dp,         p0
+            ADD4            q0,         dq,         q0
+
+            ; store 4 bytes of filtered pixels (p0, q0)
+            MV              pix_wr,     ptr_wr
+            DPACK2          q0,         p0,         pix_0_7654:pix_0_3210
+            STNW            pix_0_3210, *ptr_wr++[pix_4x]
+            STNW            pix_0_7654, *ptr_wr++[pix_4x]
+
+loop_deblock_h_chroma_intra_end:
+            ADD             pix_rd,     pix_2y,     pix_rd   ; pix_rd   += 2 * stride
+            ADD             pix_wr,     pix_2y,     pix_wr   ; pix_wr   += 2 * stride
+   [i]      BDEC            loop_deblock_h_chroma_intra, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* deblock_strength_ti -- deblock strength calculation                      *;
+;* NOTE: this function ignores reference frames check                       *;
+;* ======================================================================== *;
+		.sect ".text:_deblock_strength_ti"
+        .global _deblock_strength_ti
+_deblock_strength_ti .cproc nnz, ref, mv, bs
+            .no_mdep
+
+            .reg            nnz_11100908:nnz_07060504, nnz_19181716:nnz_15141312
+            .reg            nnz_27262524:nnz_23222120, nnz_35343332:nnz_31302928
+            .reg            nnz_14131211, nnz_22212019, nnz_30292827, nnz_38373635, nnz_39383736
+            .reg            nnz_0_3210, nnz_1_3210, nnz_2_3210, nnz_3_3210
+            .reg            mv_05:mv_04, mv_07:mv_06, mv_13:mv_12, mv_15:mv_14
+            .reg            mv_21:mv_20, mv_23:mv_22, mv_29:mv_28, mv_31:mv_30
+            .reg            mv_37:mv_36, mv_39:mv_38, mv_35, mv_27, mv_19, mv_11
+            .reg            mv_0_0, mv_0_1, mv_0_2, mv_0_3
+            .reg            mv_1_0, mv_1_1, mv_1_2, mv_1_3
+            .reg            mv_2_0, mv_2_1, mv_2_2, mv_2_3
+            .reg            mv_3_0, mv_3_1, mv_3_2, mv_3_3
+            .reg            mv_0_10, mv_0_32, mv_1_10, mv_1_32
+            .reg            mv_2_10, mv_2_32, mv_3_10, mv_3_32
+            .reg            mv_hi, mv_lo, mv_all
+            .reg            mv_0_3210, mv_1_3210, mv_2_3210, mv_3_3210
+            .reg            bs_0_10, bs_0_32, bs_1_10, bs_1_32
+            .reg            bs_2_10, bs_2_32, bs_3_10, bs_3_32
+            .reg            bs_lo_11:bs_lo_00, bs_hi_11:bs_hi_00
+            .reg            bs_lo_33:bs_lo_22, bs_hi_33:bs_hi_22
+            .reg            bs_1_3210:bs_0_3210, bs_3_3210:bs_2_3210
+            .reg            k_0, k_1, k_2, k_3
+
+            ZERO            k_0                         ; k_0 = 0x00000000
+            MVKL            0x01010101, k_1
+            MVKH            0x01010101, k_1             ; k_1 = 0x01010101
+            MVKL            0x02020202, k_2
+            MVKH            0x02020202, k_2             ; k_2 = 0x02020202
+            MVKL            0x03030303, k_3
+            MVKH            0x03030303, k_3             ; k_3 = 0x03030303
+            ADDK            4,          nnz             ; nnz += 4
+            ADDK            16,         mv              ; mv  += 16
+
+            ; load nnz array [04 ~ 39]
+            LDNDW           *nnz++,     nnz_11100908:nnz_07060504    ; 8 bytes of nnz [04 ~ 11]
+            LDNDW           *nnz++,     nnz_19181716:nnz_15141312    ; 8 bytes of nnz [12 ~ 19]
+            LDNDW           *nnz++,     nnz_27262524:nnz_23222120    ; 8 bytes of nnz [20 ~ 27]
+            LDNDW           *nnz++,     nnz_35343332:nnz_31302928    ; 8 bytes of nnz [28 ~ 35]
+            LDNW            *nnz,       nnz_39383736                 ; 4 bytes of nnz [36 ~ 39]
+            SHLMB           nnz_11100908, nnz_15141312, nnz_14131211 ; nnz [11 ~ 14]
+            SHLMB           nnz_19181716, nnz_23222120, nnz_22212019 ; nnz [19 ~ 22]
+            SHLMB           nnz_27262524, nnz_31302928, nnz_30292827 ; nnz [27 ~ 30]
+            SHLMB           nnz_35343332, nnz_39383736, nnz_38373635 ; nnz [35 ~ 38]
+
+            ; load mv array [04 ~ 39]
+            LDNDW           *mv++,      mv_05:mv_04 ; 8 bytes of mv [04 ~ 05]
+            LDNDW           *mv++[3],   mv_07:mv_06 ; 8 bytes of mv [06 ~ 07]
+            LDNDW           *mv++,      mv_13:mv_12 ; 8 bytes of mv [12 ~ 13]
+            LDNDW           *mv++[3],   mv_15:mv_14 ; 8 bytes of mv [14 ~ 15]
+            LDNDW           *mv++,      mv_21:mv_20 ; 8 bytes of mv [20 ~ 21]
+            LDNDW           *mv++[3],   mv_23:mv_22 ; 8 bytes of mv [22 ~ 23]
+            LDNDW           *mv++,      mv_29:mv_28 ; 8 bytes of mv [28 ~ 29]
+            LDNDW           *mv++[3],   mv_31:mv_30 ; 8 bytes of mv [30 ~ 31]
+            LDNDW           *mv++,      mv_37:mv_36 ; 8 bytes of mv [36 ~ 37]
+            LDNDW           *mv++,      mv_39:mv_38 ; 8 bytes of mv [38 ~ 39]
+            ADDK            -20,        mv          ; mv -= 20
+            LDNW            *mv--[8],   mv_35       ; 4 bytes of mv [35]
+            LDNW            *mv--[8],   mv_27       ; 4 bytes of mv [27]
+            LDNW            *mv--[8],   mv_19       ; 4 bytes of mv [19]
+            LDNW            *mv,        mv_11       ; 4 bytes of mv [11]
+
+            ; nnz comparison for dir=0 and dir=1
+            CMPGTU4         nnz_07060504, k_0,      nnz_07060504
+            CMPGTU4         nnz_14131211, k_0,      nnz_14131211
+            CMPGTU4         nnz_15141312, k_0,      nnz_15141312
+            CMPGTU4         nnz_22212019, k_0,      nnz_22212019
+            CMPGTU4         nnz_23222120, k_0,      nnz_23222120
+            CMPGTU4         nnz_30292827, k_0,      nnz_30292827
+            CMPGTU4         nnz_31302928, k_0,      nnz_31302928
+            CMPGTU4         nnz_38373635, k_0,      nnz_38373635
+            CMPGTU4         nnz_39383736, k_0,      nnz_39383736
+
+            ; If at least one block residual is coded (nnz > 0), set BS = 2
+            OR              nnz_15141312, nnz_14131211, nnz_0_3210
+            OR              nnz_23222120, nnz_22212019, nnz_1_3210
+            OR              nnz_31302928, nnz_30292827, nnz_2_3210
+            OR              nnz_39383736, nnz_38373635, nnz_3_3210
+            XPND4           nnz_0_3210, nnz_0_3210
+            XPND4           nnz_1_3210, nnz_1_3210
+            XPND4           nnz_2_3210, nnz_2_3210
+            XPND4           nnz_3_3210, nnz_3_3210
+
+            ; If reference frame is different, or mv diff >= 4, set BS = 1
+            SSUB2           mv_12,      mv_11,      mv_0_0
+            SSUB2           mv_13,      mv_12,      mv_0_1
+            SSUB2           mv_14,      mv_13,      mv_0_2
+            SSUB2           mv_15,      mv_14,      mv_0_3
+            SSUB2           mv_20,      mv_19,      mv_1_0
+            SSUB2           mv_21,      mv_20,      mv_1_1
+            SSUB2           mv_22,      mv_21,      mv_1_2
+            SSUB2           mv_23,      mv_22,      mv_1_3
+            SSUB2           mv_28,      mv_27,      mv_2_0
+            SSUB2           mv_29,      mv_28,      mv_2_1
+            SSUB2           mv_30,      mv_29,      mv_2_2
+            SSUB2           mv_31,      mv_30,      mv_2_3
+            SSUB2           mv_36,      mv_35,      mv_3_0
+            SSUB2           mv_37,      mv_36,      mv_3_1
+            SSUB2           mv_38,      mv_37,      mv_3_2
+            SSUB2           mv_39,      mv_38,      mv_3_3
+            ABS2            mv_0_0,     mv_0_0
+            ABS2            mv_0_1,     mv_0_1
+            ABS2            mv_0_2,     mv_0_2
+            ABS2            mv_0_3,     mv_0_3
+            ABS2            mv_1_0,     mv_1_0
+            ABS2            mv_1_1,     mv_1_1
+            ABS2            mv_1_2,     mv_1_2
+            ABS2            mv_1_3,     mv_1_3
+            ABS2            mv_2_0,     mv_2_0
+            ABS2            mv_2_1,     mv_2_1
+            ABS2            mv_2_2,     mv_2_2
+            ABS2            mv_2_3,     mv_2_3
+            ABS2            mv_3_0,     mv_3_0
+            ABS2            mv_3_1,     mv_3_1
+            ABS2            mv_3_2,     mv_3_2
+            ABS2            mv_3_3,     mv_3_3
+
+            ; combine two |mvd|, bit shrink: (16 bit -> 8 bit), value saturated: (0 - 255)
+            SPACKU4         mv_0_1,     mv_0_0,     mv_0_10
+            SPACKU4         mv_0_3,     mv_0_2,     mv_0_32
+            SPACKU4         mv_1_1,     mv_1_0,     mv_1_10
+            SPACKU4         mv_1_3,     mv_1_2,     mv_1_32
+            SPACKU4         mv_2_1,     mv_2_0,     mv_2_10
+            SPACKU4         mv_2_3,     mv_2_2,     mv_2_32
+            SPACKU4         mv_3_1,     mv_3_0,     mv_3_10
+            SPACKU4         mv_3_3,     mv_3_2,     mv_3_32
+
+            ; check each x/y of two mvd >= 4
+            CMPGTU4         mv_0_10,    k_3,        mv_0_10
+            CMPGTU4         mv_0_32,    k_3,        mv_0_32
+            CMPGTU4         mv_1_10,    k_3,        mv_1_10
+            CMPGTU4         mv_1_32,    k_3,        mv_1_32
+            CMPGTU4         mv_2_10,    k_3,        mv_2_10
+            CMPGTU4         mv_2_32,    k_3,        mv_2_32
+            CMPGTU4         mv_3_10,    k_3,        mv_3_10
+            CMPGTU4         mv_3_32,    k_3,        mv_3_32
+
+            ; combine all mvd and deinterleave x/y
+            SHL             mv_0_32,    4,          mv_0_32
+            SHL             mv_1_32,    4,          mv_1_32
+            SHL             mv_2_32,    4,          mv_2_32
+            SHL             mv_3_32,    4,          mv_3_32
+            OR              mv_0_32,    mv_0_10,    mv_0_3210
+            OR              mv_1_32,    mv_1_10,    mv_1_3210
+            OR              mv_2_32,    mv_2_10,    mv_2_3210
+            OR              mv_3_32,    mv_3_10,    mv_3_3210
+            PACK2           mv_1_3210,  mv_0_3210,  mv_lo
+            PACK2           mv_3_3210,  mv_2_3210,  mv_hi
+            PACKL4          mv_hi,      mv_lo,      mv_all
+            DEAL            mv_all,     mv_lo
+            SHRU            mv_lo,      16,         mv_hi
+            OR              mv_hi,      mv_lo,      mv_all
+
+            ; expand all mvd to generate mask
+            XPND4           mv_all,     mv_0_3210
+            SHRU            mv_all,     4,          mv_1_3210
+            SHRU            mv_all,     8,          mv_2_3210
+            SHRU            mv_all,     12,         mv_3_3210
+            XPND4           mv_1_3210,  mv_1_3210
+            XPND4           mv_2_3210,  mv_2_3210
+            XPND4           mv_3_3210,  mv_3_3210
+
+            ; combine conditions of nnz and mv
+            ANDN            mv_0_3210,  nnz_0_3210, mv_0_3210
+            ANDN            mv_1_3210,  nnz_1_3210, mv_1_3210
+            ANDN            mv_2_3210,  nnz_2_3210, mv_2_3210
+            ANDN            mv_3_3210,  nnz_3_3210, mv_3_3210
+            AND             mv_0_3210,  k_1,        mv_0_3210
+            AND             mv_1_3210,  k_1,        mv_1_3210
+            AND             mv_2_3210,  k_1,        mv_2_3210
+            AND             mv_3_3210,  k_1,        mv_3_3210
+            AND             nnz_0_3210, k_2,        nnz_0_3210
+            AND             nnz_1_3210, k_2,        nnz_1_3210
+            AND             nnz_2_3210, k_2,        nnz_2_3210
+            AND             nnz_3_3210, k_2,        nnz_3_3210
+            ADD4            nnz_0_3210, mv_0_3210,  bs_0_3210
+            ADD4            nnz_1_3210, mv_1_3210,  bs_1_3210
+            ADD4            nnz_2_3210, mv_2_3210,  bs_2_3210
+            ADD4            nnz_3_3210, mv_3_3210,  bs_3_3210
+
+            ; convert bs array from column to row
+            UNPKHU4         bs_0_3210, bs_0_32
+            UNPKLU4         bs_0_3210, bs_0_10
+            UNPKHU4         bs_1_3210, bs_1_32
+            UNPKLU4         bs_1_3210, bs_1_10
+            UNPKHU4         bs_2_3210, bs_2_32
+            UNPKLU4         bs_2_3210, bs_2_10
+            UNPKHU4         bs_3_3210, bs_3_32
+            UNPKLU4         bs_3_3210, bs_3_10
+            DPACK2          bs_1_10,   bs_0_10,  bs_lo_11:bs_lo_00
+            DPACK2          bs_3_10,   bs_2_10,  bs_hi_11:bs_hi_00
+            DPACK2          bs_1_32,   bs_0_32,  bs_lo_33:bs_lo_22
+            DPACK2          bs_3_32,   bs_2_32,  bs_hi_33:bs_hi_22
+            PACKL4          bs_hi_00,  bs_lo_00, bs_0_3210
+            PACKL4          bs_hi_11,  bs_lo_11, bs_1_3210
+            PACKL4          bs_hi_22,  bs_lo_22, bs_2_3210
+            PACKL4          bs_hi_33,  bs_lo_33, bs_3_3210
+
+            ; store bs arry of dir=0
+            STNDW           bs_1_3210:bs_0_3210, *bs++
+            STNDW           bs_3_3210:bs_2_3210, *bs++[3]
+
+            ; If at least one block residual is coded (nnz > 0), set BS = 2
+            OR              nnz_15141312, nnz_07060504, nnz_0_3210
+            OR              nnz_23222120, nnz_15141312, nnz_1_3210
+            OR              nnz_31302928, nnz_23222120, nnz_2_3210
+            OR              nnz_39383736, nnz_31302928, nnz_3_3210
+            XPND4           nnz_0_3210, nnz_0_3210
+            XPND4           nnz_1_3210, nnz_1_3210
+            XPND4           nnz_2_3210, nnz_2_3210
+            XPND4           nnz_3_3210, nnz_3_3210
+
+            ; If reference frame is different, or mv diff >= 4, set BS = 1
+            SSUB2           mv_12,      mv_04,      mv_0_0
+            SSUB2           mv_13,      mv_05,      mv_0_1
+            SSUB2           mv_14,      mv_06,      mv_0_2
+            SSUB2           mv_15,      mv_07,      mv_0_3
+            SSUB2           mv_20,      mv_12,      mv_1_0
+            SSUB2           mv_21,      mv_13,      mv_1_1
+            SSUB2           mv_22,      mv_14,      mv_1_2
+            SSUB2           mv_23,      mv_15,      mv_1_3
+            SSUB2           mv_28,      mv_20,      mv_2_0
+            SSUB2           mv_29,      mv_21,      mv_2_1
+            SSUB2           mv_30,      mv_22,      mv_2_2
+            SSUB2           mv_31,      mv_23,      mv_2_3
+            SSUB2           mv_36,      mv_28,      mv_3_0
+            SSUB2           mv_37,      mv_29,      mv_3_1
+            SSUB2           mv_38,      mv_30,      mv_3_2
+            SSUB2           mv_39,      mv_31,      mv_3_3
+            ABS2            mv_0_0,     mv_0_0
+            ABS2            mv_0_1,     mv_0_1
+            ABS2            mv_0_2,     mv_0_2
+            ABS2            mv_0_3,     mv_0_3
+            ABS2            mv_1_0,     mv_1_0
+            ABS2            mv_1_1,     mv_1_1
+            ABS2            mv_1_2,     mv_1_2
+            ABS2            mv_1_3,     mv_1_3
+            ABS2            mv_2_0,     mv_2_0
+            ABS2            mv_2_1,     mv_2_1
+            ABS2            mv_2_2,     mv_2_2
+            ABS2            mv_2_3,     mv_2_3
+            ABS2            mv_3_0,     mv_3_0
+            ABS2            mv_3_1,     mv_3_1
+            ABS2            mv_3_2,     mv_3_2
+            ABS2            mv_3_3,     mv_3_3
+
+            ; combine two |mvd|, bit shrink: (16 bit -> 8 bit), value saturated: (0 - 255)
+            SPACKU4         mv_0_1,     mv_0_0,     mv_0_10
+            SPACKU4         mv_0_3,     mv_0_2,     mv_0_32
+            SPACKU4         mv_1_1,     mv_1_0,     mv_1_10
+            SPACKU4         mv_1_3,     mv_1_2,     mv_1_32
+            SPACKU4         mv_2_1,     mv_2_0,     mv_2_10
+            SPACKU4         mv_2_3,     mv_2_2,     mv_2_32
+            SPACKU4         mv_3_1,     mv_3_0,     mv_3_10
+            SPACKU4         mv_3_3,     mv_3_2,     mv_3_32
+
+            ; check each x/y of two mvd >= 4
+            CMPGTU4         mv_0_10,    k_3,        mv_0_10
+            CMPGTU4         mv_0_32,    k_3,        mv_0_32
+            CMPGTU4         mv_1_10,    k_3,        mv_1_10
+            CMPGTU4         mv_1_32,    k_3,        mv_1_32
+            CMPGTU4         mv_2_10,    k_3,        mv_2_10
+            CMPGTU4         mv_2_32,    k_3,        mv_2_32
+            CMPGTU4         mv_3_10,    k_3,        mv_3_10
+            CMPGTU4         mv_3_32,    k_3,        mv_3_32
+
+            ; combine all mvd and deinterleave x/y
+            SHL             mv_0_32,    4,          mv_0_32
+            SHL             mv_1_32,    4,          mv_1_32
+            SHL             mv_2_32,    4,          mv_2_32
+            SHL             mv_3_32,    4,          mv_3_32
+            OR              mv_0_32,    mv_0_10,    mv_0_3210
+            OR              mv_1_32,    mv_1_10,    mv_1_3210
+            OR              mv_2_32,    mv_2_10,    mv_2_3210
+            OR              mv_3_32,    mv_3_10,    mv_3_3210
+            PACK2           mv_1_3210,  mv_0_3210,  mv_lo
+            PACK2           mv_3_3210,  mv_2_3210,  mv_hi
+            PACKL4          mv_hi,      mv_lo,      mv_all
+            DEAL            mv_all,     mv_lo
+            SHRU            mv_lo,      16,         mv_hi
+            OR              mv_hi,      mv_lo,      mv_all
+
+            ; expand all mvd to generate mask
+            XPND4           mv_all,     mv_0_3210
+            SHRU            mv_all,     4,          mv_1_3210
+            SHRU            mv_all,     8,          mv_2_3210
+            SHRU            mv_all,     12,         mv_3_3210
+            XPND4           mv_1_3210,  mv_1_3210
+            XPND4           mv_2_3210,  mv_2_3210
+            XPND4           mv_3_3210,  mv_3_3210
+
+            ; combine conditions of nnz and mv
+            ANDN            mv_0_3210,  nnz_0_3210, mv_0_3210
+            ANDN            mv_1_3210,  nnz_1_3210, mv_1_3210
+            ANDN            mv_2_3210,  nnz_2_3210, mv_2_3210
+            ANDN            mv_3_3210,  nnz_3_3210, mv_3_3210
+            AND             mv_0_3210,  k_1,        mv_0_3210
+            AND             mv_1_3210,  k_1,        mv_1_3210
+            AND             mv_2_3210,  k_1,        mv_2_3210
+            AND             mv_3_3210,  k_1,        mv_3_3210
+            AND             nnz_0_3210, k_2,        nnz_0_3210
+            AND             nnz_1_3210, k_2,        nnz_1_3210
+            AND             nnz_2_3210, k_2,        nnz_2_3210
+            AND             nnz_3_3210, k_2,        nnz_3_3210
+            ADD4            nnz_0_3210, mv_0_3210,  bs_0_3210
+            ADD4            nnz_1_3210, mv_1_3210,  bs_1_3210
+            ADD4            nnz_2_3210, mv_2_3210,  bs_2_3210
+            ADD4            nnz_3_3210, mv_3_3210,  bs_3_3210
+
+            ; store bs arry of dir=1
+            STNDW           bs_1_3210:bs_0_3210, *bs++
+            STNDW           bs_3_3210:bs_2_3210, *bs
+
+            .return
+            .endproc

@@ -1,0 +1,2033 @@
+;* ================================================================================================ *;
+;*  dct-a.sa: transform and zigzag for TI C6000 DSP                                                 *;
+;*                                                                                                  *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*  | cpu cost table of transform and zigzag on DM6467 simulator                               |    *;
+;*  |------------------------------------------------------------------------------------------|    *;
+;*  | Function         | Optimized cost (cycles) | Pure C cost (cycles)    | Result            |    *;
+;*  |                  |-------------------------|-------------------------|-------------------|    *;
+;*  |                  | Debug      | Release    | Debug      | Release    | Debug   | Release |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | sub16x16_dct     | 1785       | 606        | 27921      | 1701       | 15.6    |  2.8    |    *;
+;*  | sub8x8_dct       | 431        | 142        | 6965       | 416        | 16.2 *  |  2.9 *  |    *;
+;*  | sub4x4_dct       | 133        | 44         | 1726       | 96         | 13.0 *  |  2.2 *  |    *;
+;*  | sub8x8_dct_dc    | 253        | 41         | 861        | 151        |  3.4    |  3.6    |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | add16x16_idct    | 2384       | 719        | 31992      | 1951       | 13.4    |  2.7    |    *;
+;*  | add8x8_idct      | 582        | 171        | 7984       | 480        | 13.7 *  |  2.8 *  |    *;
+;*  | add4x4_idct      | 177        | 64         | 1981       | 112        | 11.2 *  |  1.7 *  |    *;
+;*  | add16x16_idct_dc | 595        | 146        | 12227      | 625        | 20.8    |  4.2    |    *;
+;*  | add8x8_idct_dc   | 148        | 102        | 3046       | 161        | 20.8    |  1.5    |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | dct4x4dc         | 100        | 34         | 891        | 55         |  8.9    |  1.6    |    *;
+;*  | idct4x4dc        | 82         | 32         | 879        | 55         | 10.8    |  1.7    |    *;
+;*  | dct2x2dc         | 110        | N/A        | 110        | N/A        |  1.0    |  N/A    |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | scan_4x4_frame   | 38         | 12         | 183        | 96         |  4.8 *  |  8.0 *  |    *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*                                                                                                  *;
+;* ================================================================================================ *;
+
+;* ======================================================================== *;
+;* dct4x4dc_ti -- dct_dc on 4x4 block (memory unaligned)                    *;
+;* ======================================================================== *;
+		.sect ".text:_dct4x4dc_ti"
+        .global _dct4x4dc_ti
+_dct4x4dc_ti .cproc dc
+            .no_mdep
+
+            .reg			dc_32:dc_10
+            .reg			dc_31:dc_20
+            .reg			s23_s01:d23_d01
+            .reg			d23_s23:d01_s01
+            .reg			dc_dwh:dc_dwl
+
+            .reg			had_30_00:had_20_10
+            .reg			had_31_01:had_21_11
+            .reg			had_32_02:had_22_12
+            .reg			had_33_03:had_23_13
+
+            .reg			had_32_30:had_02_00
+            .reg			had_22_20:had_12_10
+            .reg			had_33_31:had_03_01
+            .reg			had_23_21:had_13_11
+            .reg			k_1
+
+            MVK             0x0001,     k_1
+            PACK2           k_1,        k_1,        k_1 ; k = 0x00010001
+
+            ; 1st line of first-pass hadamard
+            LDNDW           *dc++,      dc_32:dc_10 ; 8 bytes of line 1
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_30_00:had_20_10 ; (64 bit): | (d01+d23) | (s01+s23) | (d01-d23) | (s01-s23) |
+
+            ; 2nd line of first-pass hadamard
+            LDNDW           *dc++,      dc_32:dc_10 ; 8 bytes of line 2
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_31_01:had_21_11
+
+            ; 3rd line of first-pass hadamard
+            LDNDW           *dc++,      dc_32:dc_10 ; 8 bytes of line 3
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_32_02:had_22_12
+
+            ; 4th line of first-pass hadamard
+            LDNDW           *dc--[3],   dc_32:dc_10 ; 8 bytes of line 4
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_33_03:had_23_13
+
+            ; exchange rows to columns of temp matrix
+            DPACK2			had_32_02,  had_30_00,  had_32_30:had_02_00
+            DPACK2			had_22_12,  had_20_10,  had_22_20:had_12_10
+            DPACK2			had_33_03,  had_31_01,  had_33_31:had_03_01
+            DPACK2			had_23_13,  had_21_11,  had_23_21:had_13_11
+
+            ; 1st column of final-pass hadamard
+            ADDSUB2			had_02_00,  had_03_01,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            ADD2			dc_dwh,     k_1,        dc_dwh
+            SHR2			dc_dwh,     1,          dc_dwh
+            ADD2			dc_dwl,     k_1,        dc_dwl
+            SHR2			dc_dwl,     1,          dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 1 (8 bytes)
+
+            ; 2nd column of final-pass hadamard
+            ADDSUB2			had_12_10,  had_13_11,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            ADD2			dc_dwh,     k_1,        dc_dwh
+            SHR2			dc_dwh,     1,          dc_dwh
+            ADD2			dc_dwl,     k_1,        dc_dwl
+            SHR2			dc_dwl,     1,          dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 2 (8 bytes)
+
+            ; 3rd column of final-pass hadamard
+            ADDSUB2			had_22_20,  had_23_21,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            ADD2			dc_dwh,     k_1,        dc_dwh
+            SHR2			dc_dwh,     1,          dc_dwh
+            ADD2			dc_dwl,     k_1,        dc_dwl
+            SHR2			dc_dwl,     1,          dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 3 (8 bytes)
+
+            ; 4th column of final-pass hadamard
+            ADDSUB2			had_32_30,  had_33_31,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            ADD2			dc_dwh,     k_1,        dc_dwh
+            SHR2			dc_dwh,     1,          dc_dwh
+            ADD2			dc_dwl,     k_1,        dc_dwl
+            SHR2			dc_dwl,     1,          dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 4 (8 bytes)
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* idct4x4dc_ti -- idct_dc on 4x4 block (memory unaligned)                  *;
+;* ======================================================================== *;
+		.sect ".text:_idct4x4dc_ti"
+        .global _idct4x4dc_ti
+_idct4x4dc_ti .cproc dc
+            .no_mdep
+
+            .reg			dc_32:dc_10
+            .reg			dc_31:dc_20
+            .reg			s23_s01:d23_d01
+            .reg			d23_s23:d01_s01
+            .reg			dc_dwh:dc_dwl
+
+            .reg			had_30_00:had_20_10
+            .reg			had_31_01:had_21_11
+            .reg			had_32_02:had_22_12
+            .reg			had_33_03:had_23_13
+
+            .reg			had_32_30:had_02_00
+            .reg			had_22_20:had_12_10
+            .reg			had_33_31:had_03_01
+            .reg			had_23_21:had_13_11
+
+            ; 1st line of first-pass hadamard
+            LDNDW           *dc++,      dc_32:dc_10 ; 8 bytes of line 1
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_30_00:had_20_10 ; (64 bit): | (d01+d23) | (s01+s23) | (d01-d23) | (s01-s23) |
+
+            ; 2nd line of first-pass hadamard
+            LDNDW           *dc++,      dc_32:dc_10 ; 8 bytes of line 2
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_31_01:had_21_11
+
+            ; 3rd line of first-pass hadamard
+            LDNDW           *dc++,      dc_32:dc_10 ; 8 bytes of line 3
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_32_02:had_22_12
+
+            ; 4th line of first-pass hadamard
+            LDNDW           *dc--[3],   dc_32:dc_10 ; 8 bytes of line 4
+            DPACK2			dc_32,      dc_10,      dc_31:dc_20
+            ADDSUB2			dc_20,      dc_31,      s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    had_33_03:had_23_13
+
+            ; exchange rows to columns of temp matrix
+            DPACK2			had_32_02,  had_30_00,  had_32_30:had_02_00
+            DPACK2			had_22_12,  had_20_10,  had_22_20:had_12_10
+            DPACK2			had_33_03,  had_31_01,  had_33_31:had_03_01
+            DPACK2			had_23_13,  had_21_11,  had_23_21:had_13_11
+
+            ; 1st column of final-pass hadamard
+            ADDSUB2			had_02_00,  had_03_01,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 1 (8 bytes)
+
+            ; 2nd column of final-pass hadamard
+            ADDSUB2			had_12_10,  had_13_11,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 2 (8 bytes)
+
+            ; 3rd column of final-pass hadamard
+            ADDSUB2			had_22_20,  had_23_21,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 3 (8 bytes)
+
+            ; 4th column of final-pass hadamard
+            ADDSUB2			had_32_30,  had_33_31,  s23_s01:d23_d01
+            DPACK2			d23_d01,    s23_s01,    d23_s23:d01_s01
+            ADDSUB2			d01_s01,    d23_s23,    s23_s01:d23_d01
+            DPACK2			s23_s01,    d23_d01,    dc_dwh:dc_dwl
+            SWAP2			dc_dwl,     dc_dwl
+            STNDW           dc_dwh:dc_dwl, *dc++ ; store line 4 (8 bytes)
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* sub4x4_dct_ti -- dct on 4x4 block (memory unaligned)                     *;
+;* ======================================================================== *;
+		.sect ".text:_sub4x4_dct_ti"
+        .global _sub4x4_dct_ti
+_sub4x4_dct_ti .cproc dct, pix1, pix2
+            .no_mdep
+
+            .reg            pix1_3210, pix2_3210
+            .reg			pix1_32,   pix1_10
+            .reg			pix2_32,   pix2_10
+            .reg			diff_32,   diff_10, diff_01
+            .reg			i_pix1_4x, i_pix2_4x, k_0
+
+            .reg			s03_s12:d03_d12
+            .reg			d03_s03:d12_s12
+            .reg			d03_pad:d12_pad
+            .reg			dct_dwh:dct_dwl
+
+            .reg			dct_01_00:dct_03_02
+            .reg			dct_11_10:dct_13_12
+            .reg			dct_21_20:dct_23_22
+            .reg			dct_31_30:dct_33_32
+
+            .reg			dct_01_11:dct_00_10
+            .reg			dct_03_13:dct_02_12
+            .reg			dct_31_21:dct_30_20
+            .reg			dct_33_23:dct_32_22
+
+            MVK				4,          i_pix1_4x         ; i_pix1_4x = 4 (FENC_STRIDE / 4)
+            MVK				8,          i_pix2_4x         ; i_pix2_4x = 8 (FDEC_STRIDE / 4)
+            MVK				0,          k_0               ; k_0 = 0
+
+            ; load 1st line
+            LDNW            *pix1++[i_pix1_4x], pix1_3210 ; 4 bytes of pix1 line 1
+            LDNW            *pix2++[i_pix2_4x], pix2_3210 ; 4 bytes of pix2 line 1
+            UNPKHU4			pix1_3210,    pix1_32
+            UNPKLU4			pix1_3210,    pix1_10
+            UNPKHU4			pix2_3210,    pix2_32
+            UNPKLU4			pix2_3210,    pix2_10
+            SUB2			pix1_32,      pix2_32,   diff_32
+            SUB2			pix1_10,      pix2_10,   diff_10
+            SWAP2			diff_10,      diff_01
+
+            ; butterfly of 1st line
+            ADDSUB2			diff_01,      diff_32,   s03_s12:d03_d12 ; s03=d0+d3, s12=d1+d2, d03=d0-d3, d12=d1-d2
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_01_00:dct_03_02
+            ADD2			dct_01_00,    d03_pad,   dct_01_00 ; 2*d03+d12, s03+s12
+            SUB2			dct_03_02,    d12_pad,   dct_03_02 ; d03-2*d12, s03-s12
+
+            ; load 2nd line
+            LDNW            *pix1++[i_pix1_4x], pix1_3210 ; 4 bytes of pix1 line 2
+            LDNW            *pix2++[i_pix2_4x], pix2_3210 ; 4 bytes of pix2 line 2
+            UNPKHU4			pix1_3210,    pix1_32
+            UNPKLU4			pix1_3210,    pix1_10
+            UNPKHU4			pix2_3210,    pix2_32
+            UNPKLU4			pix2_3210,    pix2_10
+            SUB2			pix1_32,      pix2_32,   diff_32
+            SUB2			pix1_10,      pix2_10,   diff_10
+            SWAP2			diff_10,      diff_01
+
+            ; butterfly of 2nd line
+            ADDSUB2			diff_01,      diff_32,   s03_s12:d03_d12
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_11_10:dct_13_12
+            ADD2			dct_11_10,    d03_pad,   dct_11_10
+            SUB2			dct_13_12,    d12_pad,   dct_13_12
+
+            ; load 3rd line
+            LDNW            *pix1++[i_pix1_4x], pix1_3210 ; 4 bytes of pix1 line 3
+            LDNW            *pix2++[i_pix2_4x], pix2_3210 ; 4 bytes of pix2 line 3
+            UNPKHU4			pix1_3210,    pix1_32
+            UNPKLU4			pix1_3210,    pix1_10
+            UNPKHU4			pix2_3210,    pix2_32
+            UNPKLU4			pix2_3210,    pix2_10
+            SUB2			pix1_32,      pix2_32,   diff_32
+            SUB2			pix1_10,      pix2_10,   diff_10
+            SWAP2			diff_10,      diff_01
+
+            ; butterfly of 3rd line
+            ADDSUB2			diff_01,      diff_32,   s03_s12:d03_d12
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_21_20:dct_23_22
+            ADD2			dct_21_20,    d03_pad,   dct_21_20
+            SUB2			dct_23_22,    d12_pad,   dct_23_22
+
+            ; load 4th line
+            LDNW            *pix1++[i_pix1_4x], pix1_3210 ; 4 bytes of pix1 line 4
+            LDNW            *pix2++[i_pix2_4x], pix2_3210 ; 4 bytes of pix2 line 4
+            UNPKHU4			pix1_3210,    pix1_32
+            UNPKLU4			pix1_3210,    pix1_10
+            UNPKHU4			pix2_3210,    pix2_32
+            UNPKLU4			pix2_3210,    pix2_10
+            SUB2			pix1_32,      pix2_32,   diff_32
+            SUB2			pix1_10,      pix2_10,   diff_10
+            SWAP2			diff_10,      diff_01
+
+            ; butterfly of 4th line
+            ADDSUB2			diff_01,      diff_32,   s03_s12:d03_d12
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_31_30:dct_33_32
+            ADD2			dct_31_30,    d03_pad,   dct_31_30
+            SUB2			dct_33_32,    d12_pad,   dct_33_32
+
+            ; exchange rows to columns of temp matrix
+            DPACK2			dct_01_00,    dct_11_10, dct_01_11:dct_00_10
+            DPACK2			dct_03_02,    dct_13_12, dct_03_13:dct_02_12
+            DPACK2			dct_31_30,    dct_21_20, dct_31_21:dct_30_20
+            DPACK2			dct_33_32,    dct_23_22, dct_33_23:dct_32_22
+
+            ; butterfly of 1st column
+            ADDSUB2			dct_00_10,    dct_30_20, s03_s12:d03_d12
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_01_00:dct_03_02
+            ADD2			dct_01_00,    d03_pad,   dct_dwl
+            SUB2			dct_03_02,    d12_pad,   dct_dwh
+            STNDW           dct_dwh:dct_dwl, *dct++ ; store line 1 (8 bytes)
+
+            ; butterfly of 2nd column
+            ADDSUB2			dct_01_11,    dct_31_21, s03_s12:d03_d12
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_11_10:dct_13_12
+            ADD2			dct_11_10,    d03_pad,   dct_dwl
+            SUB2			dct_13_12,    d12_pad,   dct_dwh
+            STNDW           dct_dwh:dct_dwl, *dct++ ; store line 2 (8 bytes)
+
+            ; butterfly of 3rd column
+            ADDSUB2			dct_02_12,    dct_32_22, s03_s12:d03_d12
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_21_20:dct_23_22
+            ADD2			dct_21_20,    d03_pad,   dct_dwl
+            SUB2			dct_23_22,    d12_pad,   dct_dwh
+            STNDW           dct_dwh:dct_dwl, *dct++ ; store line 3 (8 bytes)
+
+            ; butterfly of 4th column
+            ADDSUB2			dct_03_13,    dct_33_23, s03_s12:d03_d12
+            DPACK2			d03_d12,      k_0,       d03_pad:d12_pad
+            DPACK2			d03_d12,      s03_s12,   d03_s03:d12_s12
+            ADDSUB2			d03_s03,      d12_s12,   dct_31_30:dct_33_32
+            ADD2			dct_31_30,    d03_pad,   dct_dwl
+            SUB2			dct_33_32,    d12_pad,   dct_dwh
+            STNDW           dct_dwh:dct_dwl, *dct++ ; store line 4 (8 bytes)
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* sub8x8_dct_ti -- dct on 8x8 block (memory unaligned)                     *;
+;* ======================================================================== *;
+		.sect ".text:_sub8x8_dct_ti"
+        .global _sub8x8_dct_ti
+_sub8x8_dct_ti .cproc dct, pix1, pix2
+            .no_mdep
+
+            .reg            pix1_hi_3210:pix1_lo_3210, pix2_hi_3210:pix2_lo_3210
+            .reg			pix1_hi_32, pix1_hi_10, pix1_lo_32, pix1_lo_10
+            .reg			pix2_hi_32, pix2_hi_10, pix2_lo_32, pix2_lo_10
+            .reg			diff_hi_32, diff_hi_10, diff_lo_32, diff_lo_10, diff_hi_01, diff_lo_01
+            .reg			s03_s12_hi:d03_d12_hi, s03_s12_lo:d03_d12_lo
+            .reg			d03_s03_hi:d12_s12_hi, d03_s03_lo:d12_s12_lo
+            .reg			d03_pad_hi:d12_pad_hi, d03_pad_lo:d12_pad_lo
+            .reg			dct_hi_dwh:dct_hi_dwl, dct_lo_dwh:dct_lo_dwl
+            .reg			dct_hi_01_00:dct_hi_03_02
+            .reg			dct_hi_11_10:dct_hi_13_12
+            .reg			dct_hi_21_20:dct_hi_23_22
+            .reg			dct_hi_31_30:dct_hi_33_32
+            .reg			dct_hi_01_11:dct_hi_00_10
+            .reg			dct_hi_03_13:dct_hi_02_12
+            .reg			dct_hi_31_21:dct_hi_30_20
+            .reg			dct_hi_33_23:dct_hi_32_22
+            .reg			dct_lo_01_00:dct_lo_03_02
+            .reg			dct_lo_11_10:dct_lo_13_12
+            .reg			dct_lo_21_20:dct_lo_23_22
+            .reg			dct_lo_31_30:dct_lo_33_32
+            .reg			dct_lo_01_11:dct_lo_00_10
+            .reg			dct_lo_03_13:dct_lo_02_12
+            .reg			dct_lo_31_21:dct_lo_30_20
+            .reg			dct_lo_33_23:dct_lo_32_22
+            .reg			dup, k_0
+
+            MV              dct,          dup
+            ADDK            32,           dup               ; dup = dct + 32
+            ZERO            k_0                             ; k_0 = 0
+
+            ; load 1st line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210 ; FENC_STRIDE = 16
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210 ; FDEC_STRIDE = 32
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_01_00:dct_hi_03_02
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_01_00:dct_lo_03_02
+            ADD2			dct_hi_01_00, d03_pad_hi,   dct_hi_01_00
+            ADD2			dct_lo_01_00, d03_pad_lo,   dct_lo_01_00
+            SUB2			dct_hi_03_02, d12_pad_hi,   dct_hi_03_02
+            SUB2			dct_lo_03_02, d12_pad_lo,   dct_lo_03_02
+
+            ; load 2nd line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_11_10:dct_hi_13_12
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_11_10:dct_lo_13_12
+            ADD2			dct_hi_11_10, d03_pad_hi,   dct_hi_11_10
+            ADD2			dct_lo_11_10, d03_pad_lo,   dct_lo_11_10
+            SUB2			dct_hi_13_12, d12_pad_hi,   dct_hi_13_12
+            SUB2			dct_lo_13_12, d12_pad_lo,   dct_lo_13_12
+
+            ; load 3rd line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_21_20:dct_hi_23_22
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_21_20:dct_lo_23_22
+            ADD2			dct_hi_21_20, d03_pad_hi,   dct_hi_21_20
+            ADD2			dct_lo_21_20, d03_pad_lo,   dct_lo_21_20
+            SUB2			dct_hi_23_22, d12_pad_hi,   dct_hi_23_22
+            SUB2			dct_lo_23_22, d12_pad_lo,   dct_lo_23_22
+
+            ; load 4th line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_31_30:dct_hi_33_32
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_31_30:dct_lo_33_32
+            ADD2			dct_hi_31_30, d03_pad_hi,   dct_hi_31_30
+            ADD2			dct_lo_31_30, d03_pad_lo,   dct_lo_31_30
+            SUB2			dct_hi_33_32, d12_pad_hi,   dct_hi_33_32
+            SUB2			dct_lo_33_32, d12_pad_lo,   dct_lo_33_32
+
+            ; exchange rows to columns of temp matrix
+            DPACK2			dct_hi_01_00, dct_hi_11_10, dct_hi_01_11:dct_hi_00_10
+            DPACK2			dct_hi_03_02, dct_hi_13_12, dct_hi_03_13:dct_hi_02_12
+            DPACK2			dct_hi_31_30, dct_hi_21_20, dct_hi_31_21:dct_hi_30_20
+            DPACK2			dct_hi_33_32, dct_hi_23_22, dct_hi_33_23:dct_hi_32_22
+            DPACK2			dct_lo_01_00, dct_lo_11_10, dct_lo_01_11:dct_lo_00_10
+            DPACK2			dct_lo_03_02, dct_lo_13_12, dct_lo_03_13:dct_lo_02_12
+            DPACK2			dct_lo_31_30, dct_lo_21_20, dct_lo_31_21:dct_lo_30_20
+            DPACK2			dct_lo_33_32, dct_lo_23_22, dct_lo_33_23:dct_lo_32_22
+
+            ; butterfly of 1st column
+            ADDSUB2			dct_hi_00_10, dct_hi_30_20, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_00_10, dct_lo_30_20, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_01_00:dct_hi_03_02
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_01_00:dct_lo_03_02
+            ADD2			dct_hi_01_00, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_01_00, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_03_02, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_03_02, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 1 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 1 (8 bytes)
+
+            ; butterfly of 2nd column
+            ADDSUB2			dct_hi_01_11, dct_hi_31_21, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_01_11, dct_lo_31_21, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_11_10:dct_hi_13_12
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_11_10:dct_lo_13_12
+            ADD2			dct_hi_11_10, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_11_10, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_13_12, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_13_12, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 2 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 2 (8 bytes)
+
+            ; butterfly of 3rd column
+            ADDSUB2			dct_hi_02_12, dct_hi_32_22, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_02_12, dct_lo_32_22, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_21_20:dct_hi_23_22
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_21_20:dct_lo_23_22
+            ADD2			dct_hi_21_20, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_21_20, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_23_22, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_23_22, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 3 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 3 (8 bytes)
+
+            ; butterfly of 4th column
+            ADDSUB2			dct_hi_03_13, dct_hi_33_23, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_03_13, dct_lo_33_23, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_31_30:dct_hi_33_32
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_31_30:dct_lo_33_32
+            ADD2			dct_hi_31_30, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_31_30, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_33_32, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_33_32, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 4 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 4 (8 bytes)
+
+            ADDK            32,           dct   ; dct += 32
+            ADDK            32,           dup   ; dup += 32
+
+            ; load 1st line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210 ; FENC_STRIDE = 16
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210 ; FDEC_STRIDE = 32
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_01_00:dct_hi_03_02
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_01_00:dct_lo_03_02
+            ADD2			dct_hi_01_00, d03_pad_hi,   dct_hi_01_00
+            ADD2			dct_lo_01_00, d03_pad_lo,   dct_lo_01_00
+            SUB2			dct_hi_03_02, d12_pad_hi,   dct_hi_03_02
+            SUB2			dct_lo_03_02, d12_pad_lo,   dct_lo_03_02
+
+            ; load 2nd line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_11_10:dct_hi_13_12
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_11_10:dct_lo_13_12
+            ADD2			dct_hi_11_10, d03_pad_hi,   dct_hi_11_10
+            ADD2			dct_lo_11_10, d03_pad_lo,   dct_lo_11_10
+            SUB2			dct_hi_13_12, d12_pad_hi,   dct_hi_13_12
+            SUB2			dct_lo_13_12, d12_pad_lo,   dct_lo_13_12
+
+            ; load 3rd line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_21_20:dct_hi_23_22
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_21_20:dct_lo_23_22
+            ADD2			dct_hi_21_20, d03_pad_hi,   dct_hi_21_20
+            ADD2			dct_lo_21_20, d03_pad_lo,   dct_lo_21_20
+            SUB2			dct_hi_23_22, d12_pad_hi,   dct_hi_23_22
+            SUB2			dct_lo_23_22, d12_pad_lo,   dct_lo_23_22
+
+            ; load 4th line and do butterfly
+            LDNDW           *pix1++[2],   pix1_hi_3210:pix1_lo_3210
+            LDNDW           *pix2++[4],   pix2_hi_3210:pix2_lo_3210
+            UNPKHU4			pix1_hi_3210, pix1_hi_32
+            UNPKLU4			pix1_hi_3210, pix1_hi_10
+            UNPKHU4			pix1_lo_3210, pix1_lo_32
+            UNPKLU4			pix1_lo_3210, pix1_lo_10
+            UNPKHU4			pix2_hi_3210, pix2_hi_32
+            UNPKLU4			pix2_hi_3210, pix2_hi_10
+            UNPKHU4			pix2_lo_3210, pix2_lo_32
+            UNPKLU4			pix2_lo_3210, pix2_lo_10
+            SUB2			pix1_hi_32,   pix2_hi_32,   diff_hi_32
+            SUB2			pix1_hi_10,   pix2_hi_10,   diff_hi_10
+            SUB2			pix1_lo_32,   pix2_lo_32,   diff_lo_32
+            SUB2			pix1_lo_10,   pix2_lo_10,   diff_lo_10
+            SWAP2			diff_hi_10,   diff_hi_01
+            SWAP2			diff_lo_10,   diff_lo_01
+            ADDSUB2			diff_hi_01,   diff_hi_32,   s03_s12_hi:d03_d12_hi
+            ADDSUB2			diff_lo_01,   diff_lo_32,   s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_31_30:dct_hi_33_32
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_31_30:dct_lo_33_32
+            ADD2			dct_hi_31_30, d03_pad_hi,   dct_hi_31_30
+            ADD2			dct_lo_31_30, d03_pad_lo,   dct_lo_31_30
+            SUB2			dct_hi_33_32, d12_pad_hi,   dct_hi_33_32
+            SUB2			dct_lo_33_32, d12_pad_lo,   dct_lo_33_32
+
+            ; exchange rows to columns of temp matrix
+            DPACK2			dct_hi_01_00, dct_hi_11_10, dct_hi_01_11:dct_hi_00_10
+            DPACK2			dct_hi_03_02, dct_hi_13_12, dct_hi_03_13:dct_hi_02_12
+            DPACK2			dct_hi_31_30, dct_hi_21_20, dct_hi_31_21:dct_hi_30_20
+            DPACK2			dct_hi_33_32, dct_hi_23_22, dct_hi_33_23:dct_hi_32_22
+            DPACK2			dct_lo_01_00, dct_lo_11_10, dct_lo_01_11:dct_lo_00_10
+            DPACK2			dct_lo_03_02, dct_lo_13_12, dct_lo_03_13:dct_lo_02_12
+            DPACK2			dct_lo_31_30, dct_lo_21_20, dct_lo_31_21:dct_lo_30_20
+            DPACK2			dct_lo_33_32, dct_lo_23_22, dct_lo_33_23:dct_lo_32_22
+
+            ; butterfly of 1st column
+            ADDSUB2			dct_hi_00_10, dct_hi_30_20, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_00_10, dct_lo_30_20, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_01_00:dct_hi_03_02
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_01_00:dct_lo_03_02
+            ADD2			dct_hi_01_00, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_01_00, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_03_02, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_03_02, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 5 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 5 (8 bytes)
+
+            ; butterfly of 2nd column
+            ADDSUB2			dct_hi_01_11, dct_hi_31_21, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_01_11, dct_lo_31_21, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_11_10:dct_hi_13_12
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_11_10:dct_lo_13_12
+            ADD2			dct_hi_11_10, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_11_10, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_13_12, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_13_12, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 6 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 6 (8 bytes)
+
+            ; butterfly of 3rd column
+            ADDSUB2			dct_hi_02_12, dct_hi_32_22, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_02_12, dct_lo_32_22, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_21_20:dct_hi_23_22
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_21_20:dct_lo_23_22
+            ADD2			dct_hi_21_20, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_21_20, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_23_22, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_23_22, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 7 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 7 (8 bytes)
+
+            ; butterfly of 4th column
+            ADDSUB2			dct_hi_03_13, dct_hi_33_23, s03_s12_hi:d03_d12_hi
+            ADDSUB2			dct_lo_03_13, dct_lo_33_23, s03_s12_lo:d03_d12_lo
+            DPACK2			d03_d12_hi,   k_0,          d03_pad_hi:d12_pad_hi
+            DPACK2			d03_d12_lo,   k_0,          d03_pad_lo:d12_pad_lo
+            DPACK2			d03_d12_hi,   s03_s12_hi,   d03_s03_hi:d12_s12_hi
+            DPACK2			d03_d12_lo,   s03_s12_lo,   d03_s03_lo:d12_s12_lo
+            ADDSUB2			d03_s03_hi,   d12_s12_hi,   dct_hi_31_30:dct_hi_33_32
+            ADDSUB2			d03_s03_lo,   d12_s12_lo,   dct_lo_31_30:dct_lo_33_32
+            ADD2			dct_hi_31_30, d03_pad_hi,   dct_hi_dwl
+            ADD2			dct_lo_31_30, d03_pad_lo,   dct_lo_dwl
+            SUB2			dct_hi_33_32, d12_pad_hi,   dct_hi_dwh
+            SUB2			dct_lo_33_32, d12_pad_lo,   dct_lo_dwh
+            STNDW           dct_hi_dwh:dct_hi_dwl, *dup++ ; store upper line 8 (8 bytes)
+            STNDW           dct_lo_dwh:dct_lo_dwl, *dct++ ; store lower line 8 (8 bytes)
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* add4x4_idct_ti -- idct on 4x4 block (memory unaligned)                   *;
+;* NOTE: dct coefficients must be saturated to [-32768 - 32767]             *;
+;* ======================================================================== *;
+		.sect ".text:_add4x4_idct_ti"
+        .global _add4x4_idct_ti
+_add4x4_idct_ti .cproc pix, dct
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            dct_13, dct_31
+            .reg            tmp_10:tmp_23
+            .reg            tmp_32
+            .reg            pad_s02:pad_d02
+            .reg            s13_pad:pad_d13
+            .reg            d13_s13, d02_s02
+            .reg            pix_3210
+            .reg            pix_32, pix_10
+            .reg            k_32, i_pix_4x
+
+            ; dct matrix after 1st phase (horizontal)
+            .reg            dct_01_00:dct_02_03
+            .reg            dct_11_10:dct_12_13
+            .reg            dct_21_20:dct_22_23
+            .reg            dct_31_30:dct_32_33
+
+            ; dct matrix after 2nd phase (vertical)
+            .reg            dct_11_01:dct_10_00
+            .reg            dct_12_02:dct_13_03
+            .reg            dct_31_21:dct_30_20
+            .reg            dct_32_22:dct_33_23
+
+            MVK             0x0020,     k_32
+            PACK2           k_32,       k_32,       k_32 ; k_32 = 0x00200020
+            MVK             8,          i_pix_4x         ; i_pix_4x = 8 (FDEC_STRIDE / 4)
+
+            ; load 1st line
+            LDNDW           *dct++,     dct_32:dct_10 ; 8 bytes of line 1
+            SADDSUB2        dct_10,     dct_32,     pad_s02:pad_d02
+            PACKH2          dct_10,     dct_32,     dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31              ; dct_31 = | d[3]>>1 | d[1]>>1 |
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02             ; d02 = d[0]-d[2],    s02 = d[0]+d[2]
+            PACKLH2         pad_d13,    s13_pad,    d13_s13             ; d13 = d[1]>>1-d[3], s13 = d[1]+d[3]>>1
+            SADDSUB2        d02_s02,    d13_s13,    dct_01_00:dct_02_03 ; (64 bit): | (d02+d13) | (s02+s13) | (d02-d13) | (s02-s13) |
+
+            ; load 2nd line
+            LDNDW           *dct++,     dct_32:dct_10 ; 8 bytes of line 2
+            SADDSUB2        dct_10,     dct_32,     pad_s02:pad_d02
+            PACKH2          dct_10,     dct_32,     dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02
+            PACKLH2         pad_d13,    s13_pad,    d13_s13
+            SADDSUB2        d02_s02,    d13_s13,    dct_11_10:dct_12_13
+
+            ; load 3rd line
+            LDNDW           *dct++,     dct_32:dct_10 ; 8 bytes of line 3
+            SADDSUB2        dct_10,     dct_32,     pad_s02:pad_d02
+            PACKH2          dct_10,     dct_32,     dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02
+            PACKLH2         pad_d13,    s13_pad,    d13_s13
+            SADDSUB2        d02_s02,    d13_s13,    dct_21_20:dct_22_23
+
+            ; load 4th line
+            LDNDW           *dct++,     dct_32:dct_10 ; 8 bytes of line 4
+            SADDSUB2        dct_10,     dct_32,     pad_s02:pad_d02
+            PACKH2          dct_10,     dct_32,     dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02
+            PACKLH2         pad_d13,    s13_pad,    d13_s13
+            SADDSUB2        d02_s02,    d13_s13,    dct_31_30:dct_32_33
+
+            ; exchange rows to columns of temp matrix
+            DPACK2          dct_11_10,  dct_01_00,  dct_11_01:dct_10_00
+            DPACK2          dct_12_13,  dct_02_03,  dct_12_02:dct_13_03
+            DPACK2          dct_31_30,  dct_21_20,  dct_31_21:dct_30_20
+            DPACK2          dct_32_33,  dct_22_23,  dct_32_22:dct_33_23
+
+            ; butterfly of 1st column
+            SADDSUB2        dct_10_00,  dct_30_20,  pad_s02:pad_d02
+            PACKH2          dct_10_00,  dct_30_20,  dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31        ; dct_31 = | d[3]>>1 | d[1]>>1 |
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02       ; d02 = d[0]-d[2],    s02 = d[0]+d[2]
+            PACKLH2         pad_d13,    s13_pad,    d13_s13       ; d13 = d[1]>>1-d[3], s13 = d[1]+d[3]>>1
+            SADDSUB2        d02_s02,    d13_s13,    tmp_10:tmp_23 ; (64 bit): | (d02+d13) | (s02+s13) | (d02-d13) | (s02-s13) |
+            SWAP2           tmp_23,     tmp_32                    ; swap 2_3 to 3_2
+            SADD2           tmp_10,     k_32,       tmp_10
+            SADD2           tmp_32,     k_32,       tmp_32
+            SHR2            tmp_10,     6,          dct_10        ; ( d02 + d13 + 32 ) >> 6, ( s02 + s13 + 32 ) >> 6
+            SHR2            tmp_32,     6,          dct_32        ; ( d02 - d13 + 32 ) >> 6, ( s02 - s13 + 32 ) >> 6
+
+            ; add dct to pix line 1
+            LDNW            *pix,       pix_3210 ; 4 bytes of pix line 1
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_32,     dct_32,     pix_32
+            SADD2           pix_10,     dct_10,     pix_10
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNW            pix_3210,   *pix++[i_pix_4x]
+
+            ; butterfly of 2nd column
+            SADDSUB2        dct_11_01,  dct_31_21,  pad_s02:pad_d02
+            PACKH2          dct_11_01,  dct_31_21,  dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02
+            PACKLH2         pad_d13,    s13_pad,    d13_s13
+            SADDSUB2        d02_s02,    d13_s13,    tmp_10:tmp_23
+            SWAP2           tmp_23,     tmp_32
+            SADD2           tmp_10,     k_32,       tmp_10
+            SADD2           tmp_32,     k_32,       tmp_32
+            SHR2            tmp_10,     6,          dct_10
+            SHR2            tmp_32,     6,          dct_32
+
+            ; add dct to pix line 2
+            LDNW            *pix,       pix_3210 ; 4 bytes of pix line 2
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_32,     dct_32,     pix_32
+            SADD2           pix_10,     dct_10,     pix_10
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNW            pix_3210,   *pix++[i_pix_4x]
+
+            ; butterfly of 3rd column
+            SADDSUB2        dct_12_02,  dct_32_22,  pad_s02:pad_d02
+            PACKH2          dct_12_02,  dct_32_22,  dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02
+            PACKLH2         pad_d13,    s13_pad,    d13_s13
+            SADDSUB2        d02_s02,    d13_s13,    tmp_10:tmp_23
+            SWAP2           tmp_23,     tmp_32
+            SADD2           tmp_10,     k_32,       tmp_10
+            SADD2           tmp_32,     k_32,       tmp_32
+            SHR2            tmp_10,     6,          dct_10
+            SHR2            tmp_32,     6,          dct_32
+
+            ; add dct to pix line 3
+            LDNW            *pix,       pix_3210 ; 4 bytes of pix line 3
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_32,     dct_32,     pix_32
+            SADD2           pix_10,     dct_10,     pix_10
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNW            pix_3210,   *pix++[i_pix_4x]
+
+            ; butterfly of 4th column
+            SADDSUB2        dct_13_03,  dct_33_23,  pad_s02:pad_d02
+            PACKH2          dct_13_03,  dct_33_23,  dct_13
+            SWAP2           dct_13,     dct_31
+            SHR2            dct_31,     1,          dct_31
+            SADDSUB2        dct_31,     dct_13,     s13_pad:pad_d13
+            PACK2           pad_d02,    pad_s02,    d02_s02
+            PACKLH2         pad_d13,    s13_pad,    d13_s13
+            SADDSUB2        d02_s02,    d13_s13,    tmp_10:tmp_23
+            SWAP2           tmp_23,     tmp_32
+            SADD2           tmp_10,     k_32,       tmp_10
+            SADD2           tmp_32,     k_32,       tmp_32
+            SHR2            tmp_10,     6,          dct_10
+            SHR2            tmp_32,     6,          dct_32
+
+            ; add dct to pix line 4
+            LDNW            *pix,       pix_3210 ; 4 bytes of pix line 4
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_32,     dct_32,     pix_32
+            SADD2           pix_10,     dct_10,     pix_10
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNW            pix_3210,   *pix++[i_pix_4x]
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* add8x8_idct_ti -- idct on 8x8 block (memory unaligned)                   *;
+;* NOTE: dct coefficients must be saturated to [-32768 - 32767]             *;
+;* ======================================================================== *;
+		.sect ".text:_add8x8_idct_ti"
+        .global _add8x8_idct_ti
+_add8x8_idct_ti .cproc pix, dct
+            .no_mdep
+
+            ; dct matrix after 1st phase (horizontal)
+            .reg            dct_hi_01_00:dct_hi_02_03
+            .reg            dct_hi_11_10:dct_hi_12_13
+            .reg            dct_hi_21_20:dct_hi_22_23
+            .reg            dct_hi_31_30:dct_hi_32_33
+            .reg            dct_lo_01_00:dct_lo_02_03
+            .reg            dct_lo_11_10:dct_lo_12_13
+            .reg            dct_lo_21_20:dct_lo_22_23
+            .reg            dct_lo_31_30:dct_lo_32_33
+            ; dct matrix after 2nd phase (vertical)
+            .reg            dct_hi_11_01:dct_hi_10_00
+            .reg            dct_hi_12_02:dct_hi_13_03
+            .reg            dct_hi_31_21:dct_hi_30_20
+            .reg            dct_hi_32_22:dct_hi_33_23
+            .reg            dct_lo_11_01:dct_lo_10_00
+            .reg            dct_lo_12_02:dct_lo_13_03
+            .reg            dct_lo_31_21:dct_lo_30_20
+            .reg            dct_lo_32_22:dct_lo_33_23
+            .reg            dct_hi_32:dct_hi_10, dct_lo_32:dct_lo_10
+            .reg            dct_hi_13, dct_lo_13, dct_hi_31, dct_lo_31
+            .reg            tmp_hi_10:tmp_hi_23, tmp_lo_10:tmp_lo_23
+            .reg            tmp_hi_32, tmp_lo_32
+            .reg            pad_s02_hi:pad_d02_hi, pad_s02_lo:pad_d02_lo
+            .reg            s13_pad_hi:pad_d13_hi, s13_pad_lo:pad_d13_lo
+            .reg            d13_s13_hi, d13_s13_lo, d02_s02_hi, d02_s02_lo
+            .reg            pix_hi_3210:pix_lo_3210
+            .reg            pix_hi_32, pix_hi_10, pix_lo_32, pix_lo_10
+            .reg            dup, k_32
+
+            MVKL            0x00200020, k_32
+            MVKH            0x00200020, k_32   ; k_32   = 0x00200020
+            MV              dct,        dup
+            ADDK            32,         dup    ; dup    = dct + 32
+
+            ; load 1st line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 1
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 1
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_01_00:dct_hi_02_03
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_01_00:dct_lo_02_03
+
+            ; load 2nd line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 2
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 2
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_11_10:dct_hi_12_13
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_11_10:dct_lo_12_13
+
+            ; load 3rd line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 3
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 3
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_21_20:dct_hi_22_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_21_20:dct_lo_22_23
+
+            ; load 4th line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 4
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 4
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_31_30:dct_hi_32_33
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_31_30:dct_lo_32_33
+
+            ; exchange rows to columns of temp matrix
+            DPACK2          dct_hi_11_10, dct_hi_01_00, dct_hi_11_01:dct_hi_10_00
+            DPACK2          dct_hi_12_13, dct_hi_02_03, dct_hi_12_02:dct_hi_13_03
+            DPACK2          dct_hi_31_30, dct_hi_21_20, dct_hi_31_21:dct_hi_30_20
+            DPACK2          dct_hi_32_33, dct_hi_22_23, dct_hi_32_22:dct_hi_33_23
+            DPACK2          dct_lo_11_10, dct_lo_01_00, dct_lo_11_01:dct_lo_10_00
+            DPACK2          dct_lo_12_13, dct_lo_02_03, dct_lo_12_02:dct_lo_13_03
+            DPACK2          dct_lo_31_30, dct_lo_21_20, dct_lo_31_21:dct_lo_30_20
+            DPACK2          dct_lo_32_33, dct_lo_22_23, dct_lo_32_22:dct_lo_33_23
+
+            ; butterfly of 1st column and add dct to pix line 1
+            SADDSUB2        dct_hi_10_00, dct_hi_30_20, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10_00, dct_lo_30_20, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10_00, dct_hi_30_20, dct_hi_13
+            PACKH2          dct_lo_10_00, dct_lo_30_20, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            ; butterfly of 2nd column and add dct to pix line 2
+            SADDSUB2        dct_hi_11_01, dct_hi_31_21, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_11_01, dct_lo_31_21, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_11_01, dct_hi_31_21, dct_hi_13
+            PACKH2          dct_lo_11_01, dct_lo_31_21, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            ; butterfly of 3rd column and add dct to pix line 3
+            SADDSUB2        dct_hi_12_02, dct_hi_32_22, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_12_02, dct_lo_32_22, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_12_02, dct_hi_32_22, dct_hi_13
+            PACKH2          dct_lo_12_02, dct_lo_32_22, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            ; butterfly of 4th column and add dct to pix line 4
+            SADDSUB2        dct_hi_13_03, dct_hi_33_23, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_13_03, dct_lo_33_23, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_13_03, dct_hi_33_23, dct_hi_13
+            PACKH2          dct_lo_13_03, dct_lo_33_23, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            ADDK            32,         dct ; dct += 32
+            ADDK            32,         dup ; dup += 32
+
+            ; load 1st line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 5
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 5
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_01_00:dct_hi_02_03
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_01_00:dct_lo_02_03
+
+            ; load 2nd line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 6
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 6
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_11_10:dct_hi_12_13
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_11_10:dct_lo_12_13
+
+            ; load 3rd line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 7
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 7
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_21_20:dct_hi_22_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_21_20:dct_lo_22_23
+
+            ; load 4th line
+            LDNDW           *dup++,     dct_hi_32:dct_hi_10 ; upper 8 bytes of dct line 8
+            LDNDW           *dct++,     dct_lo_32:dct_lo_10 ; lower 8 bytes of dct line 8
+            SADDSUB2        dct_hi_10,  dct_hi_32,  pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10,  dct_lo_32,  pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10,  dct_hi_32,  dct_hi_13
+            PACKH2          dct_lo_10,  dct_lo_32,  dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, dct_hi_31_30:dct_hi_32_33
+            SADDSUB2        d02_s02_lo, d13_s13_lo, dct_lo_31_30:dct_lo_32_33
+
+            ; exchange rows to columns of temp matrix
+            DPACK2          dct_hi_11_10, dct_hi_01_00, dct_hi_11_01:dct_hi_10_00
+            DPACK2          dct_hi_12_13, dct_hi_02_03, dct_hi_12_02:dct_hi_13_03
+            DPACK2          dct_hi_31_30, dct_hi_21_20, dct_hi_31_21:dct_hi_30_20
+            DPACK2          dct_hi_32_33, dct_hi_22_23, dct_hi_32_22:dct_hi_33_23
+            DPACK2          dct_lo_11_10, dct_lo_01_00, dct_lo_11_01:dct_lo_10_00
+            DPACK2          dct_lo_12_13, dct_lo_02_03, dct_lo_12_02:dct_lo_13_03
+            DPACK2          dct_lo_31_30, dct_lo_21_20, dct_lo_31_21:dct_lo_30_20
+            DPACK2          dct_lo_32_33, dct_lo_22_23, dct_lo_32_22:dct_lo_33_23
+
+            ; butterfly of 1st column and add dct to pix line 1
+            SADDSUB2        dct_hi_10_00, dct_hi_30_20, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_10_00, dct_lo_30_20, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_10_00, dct_hi_30_20, dct_hi_13
+            PACKH2          dct_lo_10_00, dct_lo_30_20, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            ; butterfly of 2nd column and add dct to pix line 2
+            SADDSUB2        dct_hi_11_01, dct_hi_31_21, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_11_01, dct_lo_31_21, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_11_01, dct_hi_31_21, dct_hi_13
+            PACKH2          dct_lo_11_01, dct_lo_31_21, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            ; butterfly of 3rd column and add dct to pix line 3
+            SADDSUB2        dct_hi_12_02, dct_hi_32_22, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_12_02, dct_lo_32_22, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_12_02, dct_hi_32_22, dct_hi_13
+            PACKH2          dct_lo_12_02, dct_lo_32_22, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            ; butterfly of 4th column and add dct to pix line 4
+            SADDSUB2        dct_hi_13_03, dct_hi_33_23, pad_s02_hi:pad_d02_hi
+            SADDSUB2        dct_lo_13_03, dct_lo_33_23, pad_s02_lo:pad_d02_lo
+            PACKH2          dct_hi_13_03, dct_hi_33_23, dct_hi_13
+            PACKH2          dct_lo_13_03, dct_lo_33_23, dct_lo_13
+            SWAP2           dct_hi_13,  dct_hi_31
+            SWAP2           dct_lo_13,  dct_lo_31
+            SHR2            dct_hi_31,  1,          dct_hi_31
+            SHR2            dct_lo_31,  1,          dct_lo_31
+            SADDSUB2        dct_hi_31,  dct_hi_13,  s13_pad_hi:pad_d13_hi
+            SADDSUB2        dct_lo_31,  dct_lo_13,  s13_pad_lo:pad_d13_lo
+            PACK2           pad_d02_hi, pad_s02_hi, d02_s02_hi
+            PACK2           pad_d02_lo, pad_s02_lo, d02_s02_lo
+            PACKLH2         pad_d13_hi, s13_pad_hi, d13_s13_hi
+            PACKLH2         pad_d13_lo, s13_pad_lo, d13_s13_lo
+            SADDSUB2        d02_s02_hi, d13_s13_hi, tmp_hi_10:tmp_hi_23
+            SADDSUB2        d02_s02_lo, d13_s13_lo, tmp_lo_10:tmp_lo_23
+            SWAP2           tmp_hi_23,  tmp_hi_32
+            SWAP2           tmp_lo_23,  tmp_lo_32
+            SADD2           tmp_hi_10,  k_32,       tmp_hi_10
+            SADD2           tmp_lo_10,  k_32,       tmp_lo_10
+            SADD2           tmp_hi_32,  k_32,       tmp_hi_32
+            SADD2           tmp_lo_32,  k_32,       tmp_lo_32
+            SHR2            tmp_hi_10,  6,          dct_hi_10
+            SHR2            tmp_lo_10,  6,          dct_lo_10
+            SHR2            tmp_hi_32,  6,          dct_hi_32
+            SHR2            tmp_lo_32,  6,          dct_lo_32
+            LDNDW           *pix,       pix_hi_3210:pix_lo_3210
+            UNPKHU4         pix_hi_3210, pix_hi_32
+            UNPKLU4         pix_hi_3210, pix_hi_10
+            UNPKHU4         pix_lo_3210, pix_lo_32
+            UNPKLU4         pix_lo_3210, pix_lo_10
+            SADD2           pix_hi_32,  dct_hi_32,  pix_hi_32
+            SADD2           pix_lo_32,  dct_lo_32,  pix_lo_32
+            SADD2           pix_hi_10,  dct_hi_10,  pix_hi_10
+            SADD2           pix_lo_10,  dct_lo_10,  pix_lo_10
+            SPACKU4         pix_hi_32,  pix_hi_10,  pix_hi_3210
+            SPACKU4         pix_lo_32,  pix_lo_10,  pix_lo_3210
+            STNDW           pix_hi_3210:pix_lo_3210, *pix++[4]
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* sub8x8_dct_dc_ti -- dct_dc on 8x8 block (memory unaligned)               *;
+;* ======================================================================== *;
+		.sect ".text:_sub8x8_dct_dc_ti"
+        .global _sub8x8_dct_dc_ti
+_sub8x8_dct_dc_ti .cproc dct, pix1, pix2
+            .no_mdep
+
+            .reg            pix1_7654:pix1_3210
+            .reg            pix2_7654:pix2_3210
+            .reg            i_pix1_8x, i_pix2_8x
+            .reg            pix1_sum_0, pix1_sum_1, pix1_sum_2, pix1_sum_3
+            .reg            pix2_sum_0, pix2_sum_1, pix2_sum_2, pix2_sum_3
+            .reg            dotp_1, dotp_2, dotp_3, dotp_4, k_1
+            .reg            dct_32:dct_10
+            .reg            dct_20:dct_31
+            .reg            s01_s23:d01_d23
+            .reg            d01_s01:d23_s23
+            .reg            diff_0, diff_1, diff_2, diff_3
+            .reg            diff_02, diff_13
+
+            MVK             0x0101,     k_1
+            PACK2           k_1,        k_1,       k_1   ; k_1 = 0x01010101
+            MVK             2,          i_pix1_8x        ; i_pix1_8x = 2 (FENC_STRIDE / 8)
+            MVK             4,          i_pix2_8x        ; i_pix2_8x = 4 (FDEC_STRIDE / 8)
+
+            ; load 1st line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 1
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 1
+            DOTPU4          pix1_7654,    k_1,       pix1_sum_1 ; p1[7] + p1[6] + p1[5] + p1[4]
+            DOTPU4          pix1_3210,    k_1,       pix1_sum_0 ; p1[3] + p1[2] + p1[1] + p1[0]
+            DOTPU4          pix2_7654,    k_1,       pix2_sum_1 ; p2[7] + p2[6] + p2[5] + p2[4]
+            DOTPU4          pix2_3210,    k_1,       pix2_sum_0 ; p2[3] + p2[2] + p2[1] + p2[0]
+
+            ; load 2nd line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 2
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 2
+            DOTPU4          pix1_7654,    k_1,       dotp_4
+            DOTPU4          pix1_3210,    k_1,       dotp_3
+            DOTPU4          pix2_7654,    k_1,       dotp_2
+            DOTPU4          pix2_3210,    k_1,       dotp_1
+
+            ADD             pix1_sum_1,   dotp_4,    pix1_sum_1
+            ADD				pix1_sum_0,   dotp_3,    pix1_sum_0
+            ADD             pix2_sum_1,   dotp_2,    pix2_sum_1
+            ADD				pix2_sum_0,   dotp_1,    pix2_sum_0
+
+            ; load 3rd line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 3
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 3
+            DOTPU4          pix1_7654,    k_1,       dotp_4
+            DOTPU4          pix1_3210,    k_1,       dotp_3
+            DOTPU4          pix2_7654,    k_1,       dotp_2
+            DOTPU4          pix2_3210,    k_1,       dotp_1
+
+            ADD             pix1_sum_1,   dotp_4,    pix1_sum_1
+            ADD				pix1_sum_0,   dotp_3,    pix1_sum_0
+            ADD             pix2_sum_1,   dotp_2,    pix2_sum_1
+            ADD				pix2_sum_0,   dotp_1,    pix2_sum_0
+
+            ; load 4th line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 4
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 4
+            DOTPU4          pix1_7654,    k_1,       dotp_4
+            DOTPU4          pix1_3210,    k_1,       dotp_3
+            DOTPU4          pix2_7654,    k_1,       dotp_2
+            DOTPU4          pix2_3210,    k_1,       dotp_1
+
+            ADD             pix1_sum_1,   dotp_4,    pix1_sum_1
+            ADD				pix1_sum_0,   dotp_3,    pix1_sum_0
+            ADD             pix2_sum_1,   dotp_2,    pix2_sum_1
+            ADD				pix2_sum_0,   dotp_1,    pix2_sum_0
+
+            ; load 5th line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 5
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 5
+            DOTPU4          pix1_7654,    k_1,       pix1_sum_3
+            DOTPU4          pix1_3210,    k_1,       pix1_sum_2
+            DOTPU4          pix2_7654,    k_1,       pix2_sum_3
+            DOTPU4          pix2_3210,    k_1,       pix2_sum_2
+
+            ; load 6th line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 6
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 6
+            DOTPU4          pix1_7654,    k_1,       dotp_4
+            DOTPU4          pix1_3210,    k_1,       dotp_3
+            DOTPU4          pix2_7654,    k_1,       dotp_2
+            DOTPU4          pix2_3210,    k_1,       dotp_1
+
+            ADD             pix1_sum_3,   dotp_4,    pix1_sum_3
+            ADD				pix1_sum_2,   dotp_3,    pix1_sum_2
+            ADD             pix2_sum_3,   dotp_2,    pix2_sum_3
+            ADD				pix2_sum_2,   dotp_1,    pix2_sum_2
+
+            ; load 7th line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 7
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 7
+            DOTPU4          pix1_7654,    k_1,       dotp_4
+            DOTPU4          pix1_3210,    k_1,       dotp_3
+            DOTPU4          pix2_7654,    k_1,       dotp_2
+            DOTPU4          pix2_3210,    k_1,       dotp_1
+
+            ADD             pix1_sum_3,   dotp_4,    pix1_sum_3
+            ADD				pix1_sum_2,   dotp_3,    pix1_sum_2
+            ADD             pix2_sum_3,   dotp_2,    pix2_sum_3
+            ADD				pix2_sum_2,   dotp_1,    pix2_sum_2
+
+            ; load 8th line
+            LDNDW           *pix1++[i_pix1_8x], pix1_7654:pix1_3210 ; 8 bytes of pix1 line 8
+            LDNDW           *pix2++[i_pix2_8x], pix2_7654:pix2_3210 ; 8 bytes of pix2 line 8
+            DOTPU4          pix1_7654,    k_1,       dotp_4
+            DOTPU4          pix1_3210,    k_1,       dotp_3
+            DOTPU4          pix2_7654,    k_1,       dotp_2
+            DOTPU4          pix2_3210,    k_1,       dotp_1
+
+            ADD             pix1_sum_3,   dotp_4,    pix1_sum_3
+            ADD				pix1_sum_2,   dotp_3,    pix1_sum_2
+            ADD             pix2_sum_3,   dotp_2,    pix2_sum_3
+            ADD				pix2_sum_2,   dotp_1,    pix2_sum_2
+
+            SUB2			pix1_sum_3,   pix2_sum_3, diff_3 ; SUB2 make sure the result is in Signed 16 LSB
+            SUB2			pix1_sum_2,   pix2_sum_2, diff_2 ; SUB2 make sure the result is in Signed 16 LSB
+            SUB2            pix1_sum_1,   pix2_sum_1, diff_1 ; SUB2 make sure the result is in Signed 16 LSB
+            SUB2			pix1_sum_0,   pix2_sum_0, diff_0 ; SUB2 make sure the result is in Signed 16 LSB
+
+            ; 2x2 DC transform
+            PACK2           diff_0,       diff_2,     diff_02
+            PACK2           diff_1,       diff_3,     diff_13
+            ADDSUB2         diff_02,      diff_13,    s01_s23:d01_d23
+            DPACK2          d01_d23,      s01_s23,    d01_s01:d23_s23
+            ADDSUB2         d01_s01,      d23_s23,    dct_20:dct_31
+            DPACK2          dct_31,       dct_20,     dct_32:dct_10
+            STNDW           dct_32:dct_10, *dct
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* add8x8_idct_dc_ti -- idct_dc on 8x8 block (memory unaligned)             *;
+;* ======================================================================== *;
+		.sect ".text:_add8x8_idct_dc_ti"
+        .global _add8x8_idct_dc_ti
+_add8x8_idct_dc_ti .cproc pix, dct
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            dct_3:dct_2
+            .reg            dct_1:dct_0
+            .reg            pix_7654:pix_3210
+            .reg            pix_76, pix_54, pix_32, pix_10
+            .reg            i_pix_8x, k_32
+
+            MVK             0x0020,     k_32
+            PACK2           k_32,       k_32,       k_32   ; k_32 = 0x00200020
+            MVK             4,          i_pix_8x           ; i_pix_8x = 4 (FDEC_STRIDE / 8)
+
+            ; load dct and calculate: (dct + 32) >> 6
+            LDNDW           *dct,       dct_32:dct_10      ; 8 bytes of dct
+            SADD2           dct_32,     k_32,       dct_32
+            SADD2           dct_10,     k_32,       dct_10
+            SHR2            dct_32,     6,          dct_32
+            SHR2            dct_10,     6,          dct_10
+            DPACK2          dct_32,     dct_32,     dct_3:dct_2
+            DPACK2          dct_10,     dct_10,     dct_1:dct_0
+
+            ; add dct to pix line 1
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 1
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            ; add dct to pix line 2
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 2
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            ; add dct to pix line 3
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 3
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            ; add dct to pix line 4
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 4
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            ; add dct to pix line 5
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 5
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_3,      pix_76
+            SADD2           pix_54,     dct_3,      pix_54
+            SADD2           pix_32,     dct_2,      pix_32
+            SADD2           pix_10,     dct_2,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            ; add dct to pix line 6
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 6
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_3,      pix_76
+            SADD2           pix_54,     dct_3,      pix_54
+            SADD2           pix_32,     dct_2,      pix_32
+            SADD2           pix_10,     dct_2,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            ; add dct to pix line 7
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 7
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_3,      pix_76
+            SADD2           pix_54,     dct_3,      pix_54
+            SADD2           pix_32,     dct_2,      pix_32
+            SADD2           pix_10,     dct_2,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            ; add dct to pix line 8
+            LDNDW           *pix,       pix_7654:pix_3210 ; 8 bytes of pix line 8
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_3,      pix_76
+            SADD2           pix_54,     dct_3,      pix_54
+            SADD2           pix_32,     dct_2,      pix_32
+            SADD2           pix_10,     dct_2,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+            STNDW           pix_7654:pix_3210, *pix++[i_pix_8x]
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* add16x16_idct_dc_ti -- idct_dc on 16x16 block (memory unaligned)         *;
+;* ======================================================================== *;
+		.sect ".text:_add16x16_idct_dc_ti"
+        .global _add16x16_idct_dc_ti
+_add16x16_idct_dc_ti .cproc pix, dct
+            .no_mdep
+
+            .reg            dct_32:dct_10
+            .reg            dct_3:dct_2
+            .reg            dct_1:dct_0
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            pix_FE, pix_DC, pix_BA, pix_98
+            .reg            pix_76, pix_54, pix_32, pix_10
+            .reg            pix_ld_hi, pix_ld_lo
+            .reg            pix_st_hi, pix_st_lo
+            .reg            i_pix_8x, k_32, i
+
+            MVK             0x0020,     k_32
+            PACK2           k_32,       k_32,       k_32      ; k_32 = 0x00200020
+            MVK             4,          i_pix_8x              ; i_pix_8x = 4 (FDEC_STRIDE / 8)
+            MV              pix,        pix_ld_lo             ; pix_ld_lo = pix
+            MV              pix,        pix_st_lo             ; pix_st_lo = pix
+            ADD             pix,        8,          pix_ld_hi ; pix_ld_hi = pix + 8
+            ADD             pix,        8,          pix_st_hi ; pix_ld_hi = pix + 8
+            MVK             3,          i                     ; i = 3
+
+loop_idct_dc_16x16: .trip   4,          4,          4         ; loop count
+
+            ; load dct and calculate: (dct + 32) >> 6
+            LDNDW           *dct++,     dct_32:dct_10      ; 8 bytes of dct
+            SADD2           dct_32,     k_32,       dct_32
+            SADD2           dct_10,     k_32,       dct_10
+            SHR2            dct_32,     6,          dct_32
+            SHR2            dct_10,     6,          dct_10
+            DPACK2          dct_32,     dct_32,     dct_3:dct_2
+            DPACK2          dct_10,     dct_10,     dct_1:dct_0
+
+            ; add dct to pix line 1
+            LDNDW           *pix_ld_hi++[i_pix_8x], pix_FEDC:pix_BA98 ; high 8 bytes of pix line 1
+            LDNDW           *pix_ld_lo++[i_pix_8x], pix_7654:pix_3210 ; low  8 bytes of pix line 1
+
+            UNPKHU4         pix_FEDC,   pix_FE
+            UNPKLU4         pix_FEDC,   pix_DC
+            UNPKHU4         pix_BA98,   pix_BA
+            UNPKLU4         pix_BA98,   pix_98
+            SADD2           pix_FE,     dct_3,      pix_FE
+            SADD2           pix_DC,     dct_3,      pix_DC
+            SADD2           pix_BA,     dct_2,      pix_BA
+            SADD2           pix_98,     dct_2,      pix_98
+            SPACKU4         pix_FE,     pix_DC,     pix_FEDC
+            SPACKU4         pix_BA,     pix_98,     pix_BA98
+
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+
+            STNDW           pix_FEDC:pix_BA98, *pix_st_hi++[i_pix_8x]
+            STNDW           pix_7654:pix_3210, *pix_st_lo++[i_pix_8x]
+
+            ; add dct to pix line 2
+            LDNDW           *pix_ld_hi++[i_pix_8x], pix_FEDC:pix_BA98 ; high 8 bytes of pix line 2
+            LDNDW           *pix_ld_lo++[i_pix_8x], pix_7654:pix_3210 ; low  8 bytes of pix line 2
+
+            UNPKHU4         pix_FEDC,   pix_FE
+            UNPKLU4         pix_FEDC,   pix_DC
+            UNPKHU4         pix_BA98,   pix_BA
+            UNPKLU4         pix_BA98,   pix_98
+            SADD2           pix_FE,     dct_3,      pix_FE
+            SADD2           pix_DC,     dct_3,      pix_DC
+            SADD2           pix_BA,     dct_2,      pix_BA
+            SADD2           pix_98,     dct_2,      pix_98
+            SPACKU4         pix_FE,     pix_DC,     pix_FEDC
+            SPACKU4         pix_BA,     pix_98,     pix_BA98
+
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+
+            STNDW           pix_FEDC:pix_BA98, *pix_st_hi++[i_pix_8x]
+            STNDW           pix_7654:pix_3210, *pix_st_lo++[i_pix_8x]
+
+            ; add dct to pix line 3
+            LDNDW           *pix_ld_hi++[i_pix_8x], pix_FEDC:pix_BA98 ; high 8 bytes of pix line 3
+            LDNDW           *pix_ld_lo++[i_pix_8x], pix_7654:pix_3210 ; low  8 bytes of pix line 3
+
+            UNPKHU4         pix_FEDC,   pix_FE
+            UNPKLU4         pix_FEDC,   pix_DC
+            UNPKHU4         pix_BA98,   pix_BA
+            UNPKLU4         pix_BA98,   pix_98
+            SADD2           pix_FE,     dct_3,      pix_FE
+            SADD2           pix_DC,     dct_3,      pix_DC
+            SADD2           pix_BA,     dct_2,      pix_BA
+            SADD2           pix_98,     dct_2,      pix_98
+            SPACKU4         pix_FE,     pix_DC,     pix_FEDC
+            SPACKU4         pix_BA,     pix_98,     pix_BA98
+
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+
+            STNDW           pix_FEDC:pix_BA98, *pix_st_hi++[i_pix_8x]
+            STNDW           pix_7654:pix_3210, *pix_st_lo++[i_pix_8x]
+
+            ; add dct to pix line 4
+            LDNDW           *pix_ld_hi++[i_pix_8x], pix_FEDC:pix_BA98 ; high 8 bytes of pix line 4
+            LDNDW           *pix_ld_lo++[i_pix_8x], pix_7654:pix_3210 ; low  8 bytes of pix line 4
+
+            UNPKHU4         pix_FEDC,   pix_FE
+            UNPKLU4         pix_FEDC,   pix_DC
+            UNPKHU4         pix_BA98,   pix_BA
+            UNPKLU4         pix_BA98,   pix_98
+            SADD2           pix_FE,     dct_3,      pix_FE
+            SADD2           pix_DC,     dct_3,      pix_DC
+            SADD2           pix_BA,     dct_2,      pix_BA
+            SADD2           pix_98,     dct_2,      pix_98
+            SPACKU4         pix_FE,     pix_DC,     pix_FEDC
+            SPACKU4         pix_BA,     pix_98,     pix_BA98
+
+            UNPKHU4         pix_7654,   pix_76
+            UNPKLU4         pix_7654,   pix_54
+            UNPKHU4         pix_3210,   pix_32
+            UNPKLU4         pix_3210,   pix_10
+            SADD2           pix_76,     dct_1,      pix_76
+            SADD2           pix_54,     dct_1,      pix_54
+            SADD2           pix_32,     dct_0,      pix_32
+            SADD2           pix_10,     dct_0,      pix_10
+            SPACKU4         pix_76,     pix_54,     pix_7654
+            SPACKU4         pix_32,     pix_10,     pix_3210
+
+            STNDW           pix_FEDC:pix_BA98, *pix_st_hi++[i_pix_8x]
+            STNDW           pix_7654:pix_3210, *pix_st_lo++[i_pix_8x]
+
+   [i]      BDEC            loop_idct_dc_16x16,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* zigzag_scan_4x4_frame_ti -- zigzag scan on 4x4 frame                     *;
+;*                                                                          *;
+;* 0  1  2  3        0  2  3  9                                             *;
+;* 4  5  6  7   ==>  1  4  8  A                                             *;
+;* 8  9  A  B   ==>  5  7  B  E                                             *;
+;* C  D  E  F        6  C  D  F                                             *;
+;* ======================================================================== *;
+		.sect ".text:_zigzag_scan_4x4_frame_ti"
+        .global _zigzag_scan_4x4_frame_ti
+_zigzag_scan_4x4_frame_ti .cproc level, dct
+            .no_mdep
+
+            .reg            dct_32:dct_10, dct_76:dct_54, dct_BA:dct_98, dct_FE:dct_DC
+            .reg            lev_32:lev_10, lev_76:lev_54, lev_BA:lev_98, lev_FE:lev_DC
+
+            LDNDW           *dct++,     dct_32:dct_10
+            LDNDW           *dct++,     dct_76:dct_54
+            LDNDW           *dct++,     dct_BA:dct_98
+            LDNDW           *dct++,     dct_FE:dct_DC
+
+            PACK2           dct_54,     dct_10,     lev_10
+            PACKLH2         dct_32,     dct_10,     lev_32
+            PACKLH2         dct_98,     dct_54,     lev_54
+            PACKHL2         dct_98,     dct_DC,     lev_76
+            PACKHL2         dct_32,     dct_76,     lev_98
+            PACKLH2         dct_BA,     dct_76,     lev_BA
+            PACKLH2         dct_FE,     dct_DC,     lev_DC
+            PACKH2          dct_FE,     dct_BA,     lev_FE
+
+            STNDW           lev_32:lev_10, *level++
+            STNDW           lev_76:lev_54, *level++
+            STNDW           lev_BA:lev_98, *level++
+            STNDW           lev_FE:lev_DC, *level++
+
+            .return
+            .endproc

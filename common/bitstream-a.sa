@@ -1,0 +1,191 @@
+;* ================================================================================================ *;
+;*  bitstream-a.sa: bitstream for TI C6000 DSP                                                      *;
+;*                                                                                                  *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*  | cpu cost table of bitstream on DM6467 simulator                                          |    *;
+;*  |------------------------------------------------------------------------------------------|    *;
+;*  | Function         | Optimized cost (cycles) | Pure C cost (cycles)    | Result            |    *;
+;*  |                  |-------------------------|-------------------------|-------------------|    *;
+;*  |                  | Debug      | Release    | Debug      | Release    | Debug   | Release |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | x264_nal_escape  | 10026   D1 | 6465    D1 | 112589  D1 | 99192   D1 |  11.2   |  15.3   |    *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*                                                                                                  *;
+;* ================================================================================================ *;
+
+;* ======================================================================== *;
+;* x264_nal_escape_ti -- nal escape                                         *;
+;* ======================================================================== *;
+		.sect ".text:_x264_nal_escape_ti"
+        .global _x264_nal_escape_ti
+_x264_nal_escape_ti .cproc dst, src, end
+            .no_mdep
+
+            .reg            src_7654:src_3210
+            .reg            src_FEDC:src_BA98
+            .reg            eq0_3210, eq0_7654, eq0_BA98, eq0_FEDC
+            .reg            lt4_3210, lt4_7654, lt4_BA98, lt4_FEDC
+            .reg            eq0, eq0_hi, eq0_lo
+            .reg            lt4, lt4_hi, lt4_lo
+            .reg            src_0, src_1, src_2, src_3, bak_0, bak_1, src_x4
+            .reg            con_x16, con_x4, con_x1
+            .reg            num, num_x1, num_x16, k_0, k_4, k_3, k_FF, i, j, k
+
+            ZERO            k_0
+            MVKL            0x04040404, k_4
+            MVKH            0x04040404, k_4
+            MVK             0x03,       k_3
+            MVK             0xFF,       k_FF
+            ZERO            bak_0
+            ZERO            bak_1
+            SUB             end,        src,        num
+            SHR             num,        4,          num_x16
+            AND             15,         num,        num_x1
+ [!num_x16] B               loop_nal_escape_x1_bgn
+
+            ; process 16 bytes each time
+loop_nal_escape_x16_bgn:
+            SUB             num_x16,    1,          i
+loop_nal_escape_x16:
+            LDNDW           *src++,     src_7654:src_3210
+            LDNDW           *src++,     src_FEDC:src_BA98
+            CMPEQ4          src_3210,   k_0,        eq0_3210
+            CMPEQ4          src_7654,   k_0,        eq0_7654
+            CMPEQ4          src_BA98,   k_0,        eq0_BA98
+            CMPEQ4          src_FEDC,   k_0,        eq0_FEDC
+            CMPLTU4         src_3210,   k_4,        lt4_3210
+            CMPLTU4         src_7654,   k_4,        lt4_7654
+            CMPLTU4         src_BA98,   k_4,        lt4_BA98
+            CMPLTU4         src_FEDC,   k_4,        lt4_FEDC
+            SHL             eq0_7654,   4,          eq0_7654
+            SHL             lt4_7654,   4,          lt4_7654
+            SHL             eq0_BA98,   8,          eq0_BA98
+            SHL             lt4_BA98,   8,          lt4_BA98
+            SHL             eq0_FEDC,   12,         eq0_FEDC
+            SHL             lt4_FEDC,   12,         lt4_FEDC
+            OR              eq0_7654,   eq0_3210,   eq0_lo
+            OR              lt4_7654,   lt4_3210,   lt4_lo
+            OR              eq0_FEDC,   eq0_BA98,   eq0_hi
+            OR              lt4_FEDC,   lt4_BA98,   lt4_hi
+            OR              eq0_hi,     eq0_lo,     eq0
+            OR              lt4_hi,     lt4_lo,     lt4
+            ; combine condition: src[0] == 0 && src[1] == 0 && src[2] <= 0x03
+            SHL             eq0,        2,          src_0
+            SHL             eq0,        1,          src_1
+            OR              src_0,      bak_0,      src_0
+            OR              src_1,      bak_1,      src_1
+            SHRU            eq0,        14,         bak_0
+            SHRU            eq0,        15,         bak_1
+            AND             src_0,      src_1,      con_x16
+            AND             con_x16,    lt4,        con_x16
+  [con_x16] B               loop_nal_escape_x16_con
+            STNDW           src_7654:src_3210, *dst++
+            STNDW           src_FEDC:src_BA98, *dst++
+   [i]      BDEC            loop_nal_escape_x16, i
+            B               loop_nal_escape_x1_bgn
+
+loop_nal_escape_x16_con:
+            AND             15,         con_x16,    con_x4
+            MV              src_3210,   src_x4
+            MVK             3,          j
+loop_nal_escape_x4:
+  [!con_x4] B               loop_nal_escape_x4_0
+            SHRU            src_x4,     8,          src_1
+            SHRU            src_x4,     16,         src_2
+            SHRU            src_x4,     24,         src_3
+            AND             src_x4,     k_FF,       src_0
+            AND             src_1,      k_FF,       src_1
+            AND             src_2,      k_FF,       src_2
+            AND             src_3,      k_FF,       src_3
+
+            AND             9,          con_x4,     k ; 0x09(1001), 0x0F(1111)
+            CMPEQ           k,          9,          k
+   [k]      B               loop_nal_escape_x4_9
+            AND             1,          con_x4,     k ; 0x01(0001), 0x03(0011), 0x07(0111)
+   [k]      B               loop_nal_escape_x4_1
+            AND             2,          con_x4,     k ; 0x02(0010), 0x06(0110), 0x0E(1110)
+   [k]      B               loop_nal_escape_x4_2
+            AND             4,          con_x4,     k ; 0x04(0100), 0x0C(1100)
+   [k]      B               loop_nal_escape_x4_4
+            B               loop_nal_escape_x4_8      ; 0x08(1000)
+
+            ; insert byte: 0x03 if necessary
+loop_nal_escape_x4_9:
+            STB             k_3,        *dst++
+            STB             src_0,      *dst++
+            STB             src_1,      *dst++
+            STB             src_2,      *dst++
+            STB             k_3,        *dst++
+            STB             src_3,      *dst++
+            B               loop_nal_escape_x4_end
+loop_nal_escape_x4_1:
+            STB             k_3,        *dst++
+            STNW            src_x4,     *dst++
+            B               loop_nal_escape_x4_end
+loop_nal_escape_x4_2:
+            STB             src_0,      *dst++
+            STB             k_3,        *dst++
+            STB             src_1,      *dst++
+            STB             src_2,      *dst++
+            STB             src_3,      *dst++
+            B               loop_nal_escape_x4_end
+loop_nal_escape_x4_4:
+            STB             src_0,      *dst++
+            STB             src_1,      *dst++
+            STB             k_3,        *dst++
+            STB             src_2,      *dst++
+            STB             src_3,      *dst++
+            B               loop_nal_escape_x4_end
+loop_nal_escape_x4_8:
+            STB             src_0,      *dst++
+            STB             src_1,      *dst++
+            STB             src_2,      *dst++
+            STB             k_3,        *dst++
+            STB             src_3,      *dst++
+            B               loop_nal_escape_x4_end
+loop_nal_escape_x4_0:
+            STNW            src_x4,     *dst++
+
+loop_nal_escape_x4_end:
+            SHRU            con_x16,    4,          con_x16
+            AND             15,         con_x16,    con_x4
+            CMPEQ           j,          3,          k
+   [k]      B               loop_nal_escape_x4_end_3
+            CMPEQ           j,          2,          k
+   [k]      B               loop_nal_escape_x4_end_2
+            CMPEQ           j,          1,          k
+   [k]      B               loop_nal_escape_x4_end_1
+            B               loop_nal_escape_x16_end
+loop_nal_escape_x4_end_3:
+            MV              src_7654,   src_x4
+   [j]      BDEC            loop_nal_escape_x4, j
+loop_nal_escape_x4_end_2:
+            MV              src_BA98,   src_x4
+   [j]      BDEC            loop_nal_escape_x4, j
+loop_nal_escape_x4_end_1:
+            MV              src_FEDC,   src_x4
+   [j]      BDEC            loop_nal_escape_x4, j
+loop_nal_escape_x16_end:
+   [i]      BDEC            loop_nal_escape_x16, i
+
+            ; process last bytes one by one
+loop_nal_escape_x1_bgn:
+  [!num_x1] B               loop_nal_escape_end
+            SUB             num_x1,     1,          i
+loop_nal_escape_x1:
+            LDB             *src++,     src_0
+            CMPEQ           src_0,      k_0,    eq0
+            CMPLTU          src_0,      k_4,    lt4
+            AND             bak_0,      bak_1,  con_x1
+            AND             con_x1,     lt4,    con_x1
+            MV              bak_1,      bak_0
+            MV              eq0,        bak_1
+  [!con_x1] B               loop_nal_escape_x1_end
+            STB             k_3,        *dst++
+loop_nal_escape_x1_end:
+            STB             src_0,      *dst++
+   [i]      BDEC            loop_nal_escape_x1, i
+
+loop_nal_escape_end:
+            .return         dst
+            .endproc

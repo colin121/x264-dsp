@@ -1,0 +1,1941 @@
+;* ================================================================================================ *;
+;*  mc-a.sa: motion compensation for TI C6000 DSP                                                   *;
+;*                                                                                                  *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*  | cpu cost table of motion compensation on DM6467 simulator                                |    *;
+;*  |------------------------------------------------------------------------------------------|    *;
+;*  | Function         | Optimized cost (cycles) | Pure C cost (cycles)    | Result            |    *;
+;*  |                  |-------------------------|-------------------------|-------------------|    *;
+;*  |                  | Debug      | Release    | Debug      | Release    | Debug   | Release |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | hpel_filter      | 135874  CIF| 15653   CIF| 1356289 CIF| 237997  CIF| 10.0 *  | 15.2 *  |    *;
+;*  | hpel_filter_h    | 46002   CIF| 4863    CIF| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  | hpel_filter_v    | 43823   CIF| 5894    CIF| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | pixel_avg        | avg: 365   | N/A        | avg: 4800  | N/A        | 13.2 *  |  N/A    |    *;
+;*  |                  | 220~870    |            | 2742~12174 |            |         |         |    *;
+;*  | pixel_avg_w8e    | 156   (8x8)| 33    (8x8)| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |                  | 300  (8x16)| 57   (8x16)|            |            |         |         |    *;
+;*  | pixel_avg_w8o    | 171   (8x9)| 42    (8x9)| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |                  | 315  (8x17)| 66   (8x17)|            |            |         |         |    *;
+;*  | pixel_avg_w12    | 283  (12x8)| 52   (12x8)| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |                  | 555 (12x16)| 92  (12x16)|            |            |         |         |    *;
+;*  | pixel_avg_w16    | 299~623    | 52~97      | N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |                  | (8/9/16/17)| (8/9/16/17)|            |            |         |         |    *;
+;*  | pixel_avg_w20    | 403  (20x8)| 76   (20x8)| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |                  | 795 (20x16)| 140 (20x16)|            |            |         |         |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | mc_luma          | N/A        | 68~361=146 | 321~989    | 197~2357=1067 | N/A  |  7.3 *  |    *;
+;*  | get_ref          | N/A        | 23~186=71  | 76~972     | 22~2870=814   | N/A  | 11.4 *  |    *;
+;*  | mc_chroma        | 433-1354   | 70~190=119 | 1432~4948  | 563~2007=1153 | 3.3 *|  9.6 *  |    *;
+;*  | mc_chroma_w8     | 668   (8x4)| 110   (8x4)| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |                  | 1296  (8x8)| 174   (8x8)|            |            |         |         |    *;
+;*  | mc_chroma_w4     | 381   (4x4)| 55    (4x4)| N/A        | N/A        |  N/A    |  N/A    |    *;
+;*  |                  | 725   (4x8)| 79    (4x8)|            |            |         |         |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | mc_copy_w16      | 200        | 88         | 936        | 346        |  4.7 *  |   3.9   |    *;
+;*  | mc_copy_w8       | 58         | 18         | 496        | 186        |  8.6 *  |  10.3   |    *;
+;*  | mc_copy_w4       | N/A        | N/A        | N/A        | N/A        |  N/A    |   N/A   |    *;
+;*  |------------------|------------|------------|------------|------------|---------|---------|    *;
+;*  | plane_copy       | 117228  CIF| N/A        | 39481   CIF| N/A        |  :-(    |   N/A   |    *;
+;*  | plane_copy_shfl  | 84252   CIF| 15274   CIF| 1095582 CIF| 306305  CIF| 13.0 *  |  20.0   |    *;
+;*  | plane_copy_deal  | N/A        | N/A        | 3102       | 977        |  N/A    |   N/A   |    *;
+;*  |-------------------------------|------------|------------|------------|---------|---------|    *;
+;*  | store_shfl_chroma     | 218   | 42         | 2651       | 965        | 12.2 *  |  22.9   |    *;
+;*  | load_deal_chroma_fenc | 186   | 41         | 3137       | 991        | 16.9 *  |  24.1   |    *;
+;*  | load_deal_chroma_fdec | 186   | 41         | 3139       | 991        | 16.9 *  |  24.1   |    *;
+;*  |-------------------------------|------------|------------|------------|---------|---------|    *;
+;*  | frame_init_lowres |337122  CIF| 35730   CIF| 3002431 CIF| 1344403 CIF|  8.9 *  |  37.6 * |    *;
+;*  --------------------------------------------------------------------------------------------    *;
+;*                                                                                                  *;
+;* ================================================================================================ *;
+
+;* ======================================================================== *;
+;* pixel_avg_w8e_ti -- pixel average by width of 8 and height is even(8/16) *;
+;* NOTE: this function suppose dst be 8-bytes aligned but src1/2 not.       *;
+;* ======================================================================== *;
+		.sect ".text:_pixel_avg_w8e_ti"
+        .global _pixel_avg_w8e_ti
+_pixel_avg_w8e_ti .cproc dst, i_dst_stride, src1, i_src1_stride, src2, i_src2_stride, i_width, i_height
+            .no_mdep
+
+            .reg            src1_FEDC:src1_BA98, src1_7654:src1_3210
+            .reg            src2_FEDC:src2_BA98, src2_7654:src2_3210
+            .reg            dst_FEDC:dst_BA98,   dst_7654:dst_3210
+            .reg            src1_8x, src2_8x, dst_8x, i
+
+            SHR             i_src1_stride, 3,       src1_8x
+            SHR             i_src2_stride, 3,       src2_8x
+            SHR             i_dst_stride,  3,       dst_8x
+            SHR             i_height,      1,       i
+            SUB             i,             1,       i
+
+loop_pixel_avg_w8e: .trip   4,             8,       4
+            LDNDW           *src1++[src1_8x], src1_7654:src1_3210
+            LDNDW           *src2++[src2_8x], src2_7654:src2_3210
+            LDNDW           *src1++[src1_8x], src1_FEDC:src1_BA98
+            LDNDW           *src2++[src2_8x], src2_FEDC:src2_BA98
+            AVGU4           src1_7654,  src2_7654,  dst_7654
+            AVGU4           src1_3210,  src2_3210,  dst_3210
+            AVGU4           src1_FEDC,  src2_FEDC,  dst_FEDC
+            AVGU4           src1_BA98,  src2_BA98,  dst_BA98
+            STDW            dst_7654:dst_3210, *dst++[dst_8x]
+            STDW            dst_FEDC:dst_BA98, *dst++[dst_8x]
+   [i]      BDEC            loop_pixel_avg_w8e, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* pixel_avg_w8o_ti -- pixel average by width of 8 and height is odd(9/17)  *;
+;* NOTE: this function suppose dst be 8-bytes aligned but src1/2 not.       *;
+;* ======================================================================== *;
+		.sect ".text:_pixel_avg_w8o_ti"
+        .global _pixel_avg_w8o_ti
+_pixel_avg_w8o_ti .cproc dst, i_dst_stride, src1, i_src1_stride, src2, i_src2_stride, i_width, i_height
+            .no_mdep
+
+            .reg            src1_FEDC:src1_BA98, src1_7654:src1_3210
+            .reg            src2_FEDC:src2_BA98, src2_7654:src2_3210
+            .reg            dst_FEDC:dst_BA98,   dst_7654:dst_3210
+            .reg            src1_8x, src2_8x, dst_8x, i
+
+            SHR             i_src1_stride, 3,       src1_8x
+            SHR             i_src2_stride, 3,       src2_8x
+            SHR             i_dst_stride,  3,       dst_8x
+            SHR             i_height,      1,       i
+            SUB             i,             1,       i
+
+loop_pixel_avg_w8o: .trip   4,             8,       4
+            LDNDW           *src1++[src1_8x], src1_7654:src1_3210
+            LDNDW           *src2++[src2_8x], src2_7654:src2_3210
+            LDNDW           *src1++[src1_8x], src1_FEDC:src1_BA98
+            LDNDW           *src2++[src2_8x], src2_FEDC:src2_BA98
+            AVGU4           src1_7654,  src2_7654,  dst_7654
+            AVGU4           src1_3210,  src2_3210,  dst_3210
+            AVGU4           src1_FEDC,  src2_FEDC,  dst_FEDC
+            AVGU4           src1_BA98,  src2_BA98,  dst_BA98
+            STDW            dst_7654:dst_3210, *dst++[dst_8x]
+            STDW            dst_FEDC:dst_BA98, *dst++[dst_8x]
+   [i]      BDEC            loop_pixel_avg_w8o, i
+
+            LDNDW           *src1,      src1_7654:src1_3210
+            LDNDW           *src2,      src2_7654:src2_3210
+            AVGU4           src1_7654,  src2_7654,  dst_7654
+            AVGU4           src1_3210,  src2_3210,  dst_3210
+            STDW            dst_7654:dst_3210, *dst
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* pixel_avg_w16_ti -- pixel average by width of 16 and height is 8/9/16/17 *;
+;* NOTE: this function suppose dst be 8-bytes aligned but src1/2 not.       *;
+;* ======================================================================== *;
+		.sect ".text:_pixel_avg_w16_ti"
+        .global _pixel_avg_w16_ti
+_pixel_avg_w16_ti .cproc dst, i_dst_stride, src1, i_src1_stride, src2, i_src2_stride, i_width, i_height
+            .no_mdep
+
+            .reg            src1_FEDC:src1_BA98, src1_7654:src1_3210
+            .reg            src2_FEDC:src2_BA98, src2_7654:src2_3210
+            .reg            dst_FEDC:dst_BA98,   dst_7654:dst_3210
+            .reg            src1_8x, src2_8x, dst_8x, i
+
+            SHR             i_src1_stride, 3,       src1_8x
+            SHR             i_src2_stride, 3,       src2_8x
+            SHR             i_dst_stride,  3,       dst_8x
+            SUB             i_height,      1,       i
+
+loop_pixel_avg_w16: .trip   8,             17,      1
+            LDNDW           *+src1[1],        src1_FEDC:src1_BA98
+            LDNDW           *+src2[1],        src2_FEDC:src2_BA98
+            LDNDW           *src1++[src1_8x], src1_7654:src1_3210
+            LDNDW           *src2++[src2_8x], src2_7654:src2_3210
+            AVGU4           src1_FEDC,  src2_FEDC,  dst_FEDC
+            AVGU4           src1_BA98,  src2_BA98,  dst_BA98
+            AVGU4           src1_7654,  src2_7654,  dst_7654
+            AVGU4           src1_3210,  src2_3210,  dst_3210
+            STDW            dst_FEDC:dst_BA98, *+dst[1]
+            STDW            dst_7654:dst_3210, *dst++[dst_8x]
+   [i]      BDEC            loop_pixel_avg_w16, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* pixel_avg_w12_ti -- pixel average by width of 12 and height is 8/16      *;
+;* NOTE: this function suppose dst be 8-bytes aligned but src1/2 not.       *;
+;* ======================================================================== *;
+		.sect ".text:_pixel_avg_w12_ti"
+        .global _pixel_avg_w12_ti
+_pixel_avg_w12_ti .cproc dst, i_dst_stride, src1, i_src1_stride, src2, i_src2_stride, i_width, i_height
+            .no_mdep
+
+            .reg            src1_BA98, src1_7654:src1_3210
+            .reg            src2_BA98, src2_7654:src2_3210
+            .reg            dst_BA98,  dst_7654:dst_3210
+            .reg            src1_8x, src2_8x, dst_8x, i
+
+            SHR             i_src1_stride, 3,       src1_8x
+            SHR             i_src2_stride, 3,       src2_8x
+            SHR             i_dst_stride,  3,       dst_8x
+            SUB             i_height,      1,       i
+
+loop_pixel_avg_w12: .trip   8,             16,      8
+            LDNW            *+src1[2],        src1_BA98
+            LDNW            *+src2[2],        src2_BA98
+            LDNDW           *src1++[src1_8x], src1_7654:src1_3210
+            LDNDW           *src2++[src2_8x], src2_7654:src2_3210
+            AVGU4           src1_BA98,  src2_BA98,  dst_BA98
+            AVGU4           src1_7654,  src2_7654,  dst_7654
+            AVGU4           src1_3210,  src2_3210,  dst_3210
+            STW             dst_BA98,   *+dst[2]
+            STDW            dst_7654:dst_3210, *dst++[dst_8x]
+   [i]      BDEC            loop_pixel_avg_w12, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* pixel_avg_w20_ti -- pixel average by width of 20 and height is 8/16      *;
+;* NOTE: this function suppose dst be 8-bytes aligned but src1/2 not.       *;
+;* ======================================================================== *;
+		.sect ".text:_pixel_avg_w20_ti"
+        .global _pixel_avg_w20_ti
+_pixel_avg_w20_ti .cproc dst, i_dst_stride, src1, i_src1_stride, src2, i_src2_stride, i_width, i_height
+            .no_mdep
+
+            .reg            src1_JIHG, src1_FEDC:src1_BA98, src1_7654:src1_3210
+            .reg            src2_JIHG, src2_FEDC:src2_BA98, src2_7654:src2_3210
+            .reg            dst_JIHG,  dst_FEDC:dst_BA98,   dst_7654:dst_3210
+            .reg            src1_8x, src2_8x, dst_8x, i
+
+            SHR             i_src1_stride, 3,       src1_8x
+            SHR             i_src2_stride, 3,       src2_8x
+            SHR             i_dst_stride,  3,       dst_8x
+            SUB             i_height,      1,       i
+
+loop_pixel_avg_w20: .trip   8,             16,      8
+            LDNW            *+src1[4],        src1_JIHG
+            LDNW            *+src2[4],        src2_JIHG
+            LDNDW           *+src1[1],        src1_FEDC:src1_BA98
+            LDNDW           *+src2[1],        src2_FEDC:src2_BA98
+            LDNDW           *src1++[src1_8x], src1_7654:src1_3210
+            LDNDW           *src2++[src2_8x], src2_7654:src2_3210
+            AVGU4           src1_JIHG,  src2_JIHG,  dst_JIHG
+            AVGU4           src1_FEDC,  src2_FEDC,  dst_FEDC
+            AVGU4           src1_BA98,  src2_BA98,  dst_BA98
+            AVGU4           src1_7654,  src2_7654,  dst_7654
+            AVGU4           src1_3210,  src2_3210,  dst_3210
+            STW             dst_JIHG,          *+dst[4]
+            STDW            dst_FEDC:dst_BA98, *+dst[1]
+            STDW            dst_7654:dst_3210, *dst++[dst_8x]
+   [i]      BDEC            loop_pixel_avg_w20, i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* hpel_filter_v_ti -- luma vertical half-pixel with 6-tap filter           *;
+;* (1 * (p[-2] + p[3]) - 5 * (p[-1] + p[2]) + 20 * (p[0] + p[1]) + 16) / 32 *;
+;*                                                                          *;
+;* NOTE: this function suppose i_height be 16/32 and                        *;
+;*       i_width be multiple of 8.                                          *;
+;*       the inner loop calcualtes 4 lines with 8 bytes of each line.       *;
+;* ======================================================================== *;
+		.sect ".text:_hpel_filter_v_ti"
+        .global _hpel_filter_v_ti
+_hpel_filter_v_ti .cproc dst, src, i_stride, i_width, i_height
+            .no_mdep
+
+            ; 9 src lines
+            .reg            src_0_7654:src_0_3210
+            .reg            src_1_7654:src_1_3210
+            .reg            src_2_7654:src_2_3210
+            .reg            src_3_7654:src_3_3210
+            .reg            src_4_7654:src_4_3210
+            .reg            src_5_7654:src_5_3210
+            .reg            src_6_7654:src_6_3210
+            .reg            src_7_7654:src_7_3210
+            .reg            src_8_7654:src_8_3210
+            ; 2 dst lines
+            .reg            dst_0_7654:dst_0_3210
+            .reg            dst_1_7654:dst_1_3210
+            .reg            dst_76, dst_54, dst_32, dst_10
+            ; values with tap-filter
+            .reg            tap_k5, tap_k20
+            .reg            tap_x1_7654, tap_x1_3210
+            .reg            tap_x5_7654, tap_x5_3210
+            .reg            tap_x20_7654, tap_x20_3210
+            .reg            tap_x1_76, tap_x1_54
+            .reg            tap_x1_32, tap_x1_10
+            .reg            tap_x5_76:tap_x5_54
+            .reg            tap_x5_32:tap_x5_10
+            .reg            tap_x20_76:tap_x20_54
+            .reg            tap_x20_32:tap_x20_10
+            ; cursors and loop counter
+            .reg            srcp, dstp
+            .reg            srcb, dstb
+            .reg            pix_8x, pix_2y
+            .reg            i, j, loops
+
+            MVKL            0x05050505, tap_k5
+            MVKH            0x05050505, tap_k5              ; tap_k5  = 0x05050505
+            MVKL            0x14141414, tap_k20
+            MVKH            0x14141414, tap_k20             ; tap_k20 = 0x14141414
+            SHR             i_stride,   3,          pix_8x  ; pix_8x  = i_stride >> 3
+            SHL             i_stride,   1,          pix_2y  ; pix_2y  = i_stride << 1
+            SUB             src,        pix_2y,     srcb
+            SUB             srcb,       4,          srcb    ; srcb = src - 2 * i_stride - 4
+            SUB             dst,        4,          dstb    ; dstb = dst - 4
+            SHR             i_height,   2,          loops
+            SUB             loops,      1,          loops   ; loops = (i_height >> 2) - 1
+            SHR             i_width,    3,          i       ; i = i_width >> 3 (one extra loop for left/right paddings)
+
+loop_hpel_filter_v_i:                                       ; loop count: (i_width >> 3 + 1)
+
+            ; set current load/store pointers to base
+            MV              srcb,       srcp                ; srcp = srcb
+            MV              dstb,       dstp                ; dstp = dstb
+            ADD             srcb,       8,          srcb    ; srcb += 8 for next time
+            ADD             dstb,       8,          dstb    ; dstb += 8 for next time
+            ; load first 5 lines
+            LDNDW           *srcp++[pix_8x], src_0_7654:src_0_3210
+            LDNDW           *srcp++[pix_8x], src_1_7654:src_1_3210
+            LDNDW           *srcp++[pix_8x], src_2_7654:src_2_3210
+            LDNDW           *srcp++[pix_8x], src_3_7654:src_3_3210
+            LDNDW           *srcp++[pix_8x], src_4_7654:src_4_3210
+            MV              loops,      j                   ; init loop count
+
+loop_hpel_filter_v_j: .trip 4,          8,          4       ; loop count [4 - 8]
+
+            ; load and calcualte next 2 lines
+            LDNDW           *srcp++[pix_8x], src_5_7654:src_5_3210
+            LDNDW           *srcp++[pix_8x], src_6_7654:src_6_3210
+            ; 6-tap filter for line 1
+            AVGU4           src_0_7654,   src_5_7654,  tap_x1_7654
+            AVGU4           src_0_3210,   src_5_3210,  tap_x1_3210
+            AVGU4           src_1_7654,   src_4_7654,  tap_x5_7654
+            AVGU4           src_1_3210,   src_4_3210,  tap_x5_3210
+            AVGU4           src_2_7654,   src_3_7654,  tap_x20_7654
+            AVGU4           src_2_3210,   src_3_3210,  tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_0_7654
+            SPACKU4         dst_32,       dst_10,      dst_0_3210
+            ; 6-tap filter for line 2
+            AVGU4           src_1_7654,   src_6_7654,  tap_x1_7654
+            AVGU4           src_1_3210,   src_6_3210,  tap_x1_3210
+            AVGU4           src_2_7654,   src_5_7654,  tap_x5_7654
+            AVGU4           src_2_3210,   src_5_3210,  tap_x5_3210
+            AVGU4           src_3_7654,   src_4_7654,  tap_x20_7654
+            AVGU4           src_3_3210,   src_4_3210,  tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_1_7654
+            SPACKU4         dst_32,       dst_10,      dst_1_3210
+            STNDW           dst_0_7654:dst_0_3210, *dstp++[pix_8x] ; store 8 bytes of line 1
+            STNDW           dst_1_7654:dst_1_3210, *dstp++[pix_8x] ; store 8 bytes of line 2
+
+            ; load and calcualte next 2 lines
+            LDNDW           *srcp++[pix_8x], src_7_7654:src_7_3210
+            LDNDW           *srcp++[pix_8x], src_8_7654:src_8_3210
+            ; 6-tap filter for line 3
+            AVGU4           src_2_7654,   src_7_7654,  tap_x1_7654
+            AVGU4           src_2_3210,   src_7_3210,  tap_x1_3210
+            AVGU4           src_3_7654,   src_6_7654,  tap_x5_7654
+            AVGU4           src_3_3210,   src_6_3210,  tap_x5_3210
+            AVGU4           src_4_7654,   src_5_7654,  tap_x20_7654
+            AVGU4           src_4_3210,   src_5_3210,  tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_0_7654
+            SPACKU4         dst_32,       dst_10,      dst_0_3210
+            ; 6-tap filter for line 4
+            AVGU4           src_3_7654,   src_8_7654,  tap_x1_7654
+            AVGU4           src_3_3210,   src_8_3210,  tap_x1_3210
+            AVGU4           src_4_7654,   src_7_7654,  tap_x5_7654
+            AVGU4           src_4_3210,   src_7_3210,  tap_x5_3210
+            AVGU4           src_5_7654,   src_6_7654,  tap_x20_7654
+            AVGU4           src_5_3210,   src_6_3210,  tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_1_7654
+            SPACKU4         dst_32,       dst_10,      dst_1_3210
+            STNDW           dst_0_7654:dst_0_3210, *dstp++[pix_8x] ; store 8 bytes of line 3
+            STNDW           dst_1_7654:dst_1_3210, *dstp++[pix_8x] ; store 8 bytes of line 4
+
+            ; move previous 5 lines for next time
+            MV              src_4_7654,   src_0_7654
+            MV              src_4_3210,   src_0_3210
+            MV              src_5_7654,   src_1_7654
+            MV              src_5_3210,   src_1_3210
+            MV              src_6_7654,   src_2_7654
+            MV              src_6_3210,   src_2_3210
+            MV              src_7_7654,   src_3_7654
+            MV              src_7_3210,   src_3_3210
+            MV              src_8_7654,   src_4_7654
+            MV              src_8_3210,   src_4_3210
+
+   [j]      BDEC            loop_hpel_filter_v_j,  j
+
+   [i]      BDEC            loop_hpel_filter_v_i,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* hpel_filter_h_ti -- luma horizontal half-pixel with 6-tap filter         *;
+;* (1 * (p[-2] + p[3]) - 5 * (p[-1] + p[2]) + 20 * (p[0] + p[1]) + 16) / 32 *;
+;*                                                                          *;
+;* NOTE: this function suppose i_height be multiple of 2 and                *;
+;*       i_width be multiple of 16.                                         *;
+;*       the inner loop calcualtes 2 lines with 16 bytes of each line.      *;
+;* ======================================================================== *;
+		.sect ".text:_hpel_filter_h_ti"
+        .global _hpel_filter_h_ti
+_hpel_filter_h_ti .cproc dst, src, i_stride, i_width, i_height
+            .no_mdep
+
+            ; 2 src lines
+            .reg            src_0_nmlk:src_0_jihg, src_0_fedc:src_0_ba98, src_0_7654:src_0_3210
+            .reg            src_1_nmlk:src_1_jihg, src_1_fedc:src_1_ba98, src_1_7654:src_1_3210
+            .reg            src_4321, src_5432, src_6543, src_8765, src_9876, src_a987, src_0_cba9
+            .reg            src_dcba, src_edcb, src_gfed, src_hgfe, src_ihgf, src_kjih, src_1_cba9
+            ; 2 dst lines
+            .reg            dst_0_7654:dst_0_3210
+            .reg            dst_1_7654:dst_1_3210
+            .reg            dst_76, dst_54, dst_32, dst_10
+            ; values with tap-filter
+            .reg            tap_k5, tap_k20
+            .reg            tap_x1_7654, tap_x1_3210
+            .reg            tap_x5_7654, tap_x5_3210
+            .reg            tap_x20_7654, tap_x20_3210
+            .reg            tap_x1_76, tap_x1_54
+            .reg            tap_x1_32, tap_x1_10
+            .reg            tap_x5_76:tap_x5_54
+            .reg            tap_x5_32:tap_x5_10
+            .reg            tap_x20_76:tap_x20_54
+            .reg            tap_x20_32:tap_x20_10
+            ; cursors and loop counter
+            .reg            srcp, dstp
+            .reg            srcb, dstb
+            .reg            pix_8x, pix_2y
+            .reg            i, j, loops
+
+            MVKL            0x05050505, tap_k5
+            MVKH            0x05050505, tap_k5              ; tap_k5  = 0x05050505
+            MVKL            0x14141414, tap_k20
+            MVKH            0x14141414, tap_k20             ; tap_k20 = 0x14141414
+            SHR             i_stride,   3,          pix_8x  ; pix_8x  = i_stride >> 3
+            SHL             i_stride,   1,          pix_2y  ; pix_2y  = i_stride << 1
+            SUB             src,        2,          srcb    ; srcb = src - 2
+            MV              dst,        dstb                ; dstb = dst
+            SHR             i_width,    4,          loops
+            SUB             loops,      1,          loops   ; loops = (i_width >> 4) - 1
+            SHR             i_height,   1,          i
+            SUB             i,          1,          i       ; i = (i_height >> 1) - 1
+
+loop_hpel_filter_h_i:                                       ; loop count: (i_height >> 1)
+
+            ; set current load/store pointers to base
+            MV              srcb,       srcp                ; srcp = srcb
+            MV              dstb,       dstp                ; dstp = dstb
+            ADD             srcb,       pix_2y,     srcb    ; srcb += 2*i_stride
+            ADD             dstb,       pix_2y,     dstb    ; dstb += 2*i_stride
+            ; load first 8 bytes of 2 lines
+            LDNDW           *+srcp[pix_8x], src_1_7654:src_1_3210
+            LDNDW           *srcp++,        src_0_7654:src_0_3210
+            MV              loops,      j                   ; init loop count
+
+loop_hpel_filter_h_j: .trip 2                               ; loop count: (i_width >> 4)
+
+            ; load and calcualte next 8 bytes of 2 lines
+            LDNDW           *+srcp[pix_8x], src_1_fedc:src_1_ba98
+            LDNDW           *srcp++,        src_0_fedc:src_0_ba98
+            ; 6-tap filter for line 1
+            SHRMB           src_0_7654,   src_0_3210,  src_4321
+            PACKLH2         src_0_7654,   src_0_3210,  src_5432
+            SHLMB           src_0_3210,   src_0_7654,  src_6543
+            SHRMB           src_0_ba98,   src_0_7654,  src_8765
+            PACKLH2         src_0_ba98,   src_0_7654,  src_9876
+            SHLMB           src_0_7654,   src_0_ba98,  src_a987
+            SHRMB           src_0_fedc,   src_0_ba98,  src_0_cba9
+            AVGU4           src_0_7654,   src_0_cba9,  tap_x1_7654
+            AVGU4           src_0_3210,   src_8765,    tap_x1_3210
+            AVGU4           src_0_ba98,   src_8765,    tap_x5_7654
+            AVGU4           src_0_7654,   src_4321,    tap_x5_3210
+            AVGU4           src_9876,     src_a987,    tap_x20_7654
+            AVGU4           src_5432,     src_6543,    tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_0_7654
+            SPACKU4         dst_32,       dst_10,      dst_0_3210
+            ; 6-tap filter for line 2
+            SHRMB           src_1_7654,   src_1_3210,  src_4321
+            PACKLH2         src_1_7654,   src_1_3210,  src_5432
+            SHLMB           src_1_3210,   src_1_7654,  src_6543
+            SHRMB           src_1_ba98,   src_1_7654,  src_8765
+            PACKLH2         src_1_ba98,   src_1_7654,  src_9876
+            SHLMB           src_1_7654,   src_1_ba98,  src_a987
+            SHRMB           src_1_fedc,   src_1_ba98,  src_1_cba9
+            AVGU4           src_1_7654,   src_1_cba9,  tap_x1_7654
+            AVGU4           src_1_3210,   src_8765,    tap_x1_3210
+            AVGU4           src_1_ba98,   src_8765,    tap_x5_7654
+            AVGU4           src_1_7654,   src_4321,    tap_x5_3210
+            AVGU4           src_9876,     src_a987,    tap_x20_7654
+            AVGU4           src_5432,     src_6543,    tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_1_7654
+            SPACKU4         dst_32,       dst_10,      dst_1_3210
+            STNDW           dst_1_7654:dst_1_3210, *+dstp[pix_8x] ; store 8 bytes of line 2
+            STNDW           dst_0_7654:dst_0_3210, *dstp++        ; store 8 bytes of line 1
+
+            ; load and calcualte next 8 bytes of 2 lines
+            LDNDW           *+srcp[pix_8x], src_1_nmlk:src_1_jihg
+            LDNDW           *srcp++,        src_0_nmlk:src_0_jihg
+            ; 6-tap filter for line 1
+            PACKLH2         src_0_fedc,   src_0_ba98,  src_dcba
+            SHLMB           src_0_ba98,   src_0_fedc,  src_edcb
+            SHRMB           src_0_jihg,   src_0_fedc,  src_gfed
+            PACKLH2         src_0_jihg,   src_0_fedc,  src_hgfe
+            SHLMB           src_0_fedc,   src_0_jihg,  src_ihgf
+            SHRMB           src_0_nmlk,   src_0_jihg,  src_kjih
+            AVGU4           src_0_fedc,   src_kjih,    tap_x1_7654
+            AVGU4           src_0_ba98,   src_gfed,    tap_x1_3210
+            AVGU4           src_0_jihg,   src_gfed,    tap_x5_7654
+            AVGU4           src_0_fedc,   src_0_cba9,  tap_x5_3210
+            AVGU4           src_hgfe,     src_ihgf,    tap_x20_7654
+            AVGU4           src_dcba,     src_edcb,    tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_0_7654
+            SPACKU4         dst_32,       dst_10,      dst_0_3210
+            ; 6-tap filter for line 2
+            PACKLH2         src_1_fedc,   src_1_ba98,  src_dcba
+            SHLMB           src_1_ba98,   src_1_fedc,  src_edcb
+            SHRMB           src_1_jihg,   src_1_fedc,  src_gfed
+            PACKLH2         src_1_jihg,   src_1_fedc,  src_hgfe
+            SHLMB           src_1_fedc,   src_1_jihg,  src_ihgf
+            SHRMB           src_1_nmlk,   src_1_jihg,  src_kjih
+            AVGU4           src_1_fedc,   src_kjih,    tap_x1_7654
+            AVGU4           src_1_ba98,   src_gfed,    tap_x1_3210
+            AVGU4           src_1_jihg,   src_gfed,    tap_x5_7654
+            AVGU4           src_1_fedc,   src_1_cba9,  tap_x5_3210
+            AVGU4           src_hgfe,     src_ihgf,    tap_x20_7654
+            AVGU4           src_dcba,     src_edcb,    tap_x20_3210
+            UNPKHU4         tap_x1_7654,  tap_x1_76
+            UNPKLU4         tap_x1_7654,  tap_x1_54
+            UNPKHU4         tap_x1_3210,  tap_x1_32
+            UNPKLU4         tap_x1_3210,  tap_x1_10
+            MPYU4           tap_x5_7654,  tap_k5,      tap_x5_76:tap_x5_54
+            MPYU4           tap_x5_3210,  tap_k5,      tap_x5_32:tap_x5_10
+            MPYU4           tap_x20_7654, tap_k20,     tap_x20_76:tap_x20_54
+            MPYU4           tap_x20_3210, tap_k20,     tap_x20_32:tap_x20_10
+            SUB2            tap_x20_76,   tap_x5_76,   dst_76
+            SUB2            tap_x20_54,   tap_x5_54,   dst_54
+            SUB2            tap_x20_32,   tap_x5_32,   dst_32
+            SUB2            tap_x20_10,   tap_x5_10,   dst_10
+            ADD2            dst_76,       tap_x1_76,   dst_76
+            ADD2            dst_54,       tap_x1_54,   dst_54
+            ADD2            dst_32,       tap_x1_32,   dst_32
+            ADD2            dst_10,       tap_x1_10,   dst_10
+            SHR2            dst_76,       4,           dst_76
+            SHR2            dst_54,       4,           dst_54
+            SHR2            dst_32,       4,           dst_32
+            SHR2            dst_10,       4,           dst_10
+            SPACKU4         dst_76,       dst_54,      dst_1_7654
+            SPACKU4         dst_32,       dst_10,      dst_1_3210
+            STNDW           dst_1_7654:dst_1_3210, *+dstp[pix_8x] ; store 8 bytes of line 2
+            STNDW           dst_0_7654:dst_0_3210, *dstp++        ; store 8 bytes of line 1
+
+            ; move data for next time
+            MV              src_0_nmlk,   src_0_7654
+            MV              src_0_jihg,   src_0_3210
+            MV              src_1_nmlk,   src_1_7654
+            MV              src_1_jihg,   src_1_3210
+
+   [j]      BDEC            loop_hpel_filter_h_j,  j
+
+   [i]      BDEC            loop_hpel_filter_h_i,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* mc_chroma_w8_ti -- motion compensation for chroma plane by width of 8    *;
+;* NOTE: this function suppose i_height be 8/4                              *;
+;* ======================================================================== *;
+		.sect ".text:_mc_chroma_w8_ti"
+        .global _mc_chroma_w8_ti
+_mc_chroma_w8_ti .cproc dstu, dstv, i_dst, src, i_src, mvx, mvy, i_width, i_height
+            .no_mdep
+
+            .reg            src_0_7654:src_0_3210, src_0_FEDC:src_0_BA98, src_0_JIHG
+            .reg            src_1_7654:src_1_3210, src_1_FEDC:src_1_BA98, src_1_JIHG
+            .reg            src_0_5432, src_0_9876, src_0_DCBA, src_0_HGFE
+            .reg            src_1_5432, src_1_9876, src_1_DCBA, src_1_HGFE
+            .reg            src_2020, src_4242, src_6464, src_8686, src_A8A8, src_CACA, src_ECEC, src_GEGE
+            .reg            src_3131, src_5353, src_7575, src_9797, src_B9B9, src_DBDB, src_FDFD, src_HFHF
+            .reg            dstu_7654:dstu_3210, dstv_7654:dstv_3210
+            .reg            dst_0, dst_1, dst_2, dst_3, dst_4, dst_5, dst_6, dst_7
+            .reg            dst_10, dst_32, dst_54, dst_76
+            .reg            d8x, d8y, s8x, s8y, dx, dy
+            .reg            c_DC:c_BA, c_DCBA
+            .reg            mvxf, mvyf, offx, offy
+            .reg            src0, src1, src_8x, dst_8x
+            .reg            k_32, k_8, i
+
+            ; calculate cA, cB, cC, cD
+            MVKL            0x00200020,   k_32
+            MVKH            0x00200020,   k_32             ; k_32 = 0x00200020
+            MVKL            0x00080008,   k_8
+            MVKH            0x00080008,   k_8              ; k_8 = 0x00080008
+            AND             7,            mvx,         d8x ; d8x = mvx&0x07
+            AND             7,            mvy,         d8y ; d8y = mvy&0x07
+            SUB             8,            d8x,         s8x ; s8x = 8 - d8x
+            PACK2           d8x,          s8x,         dx  ; hi -> |   0   |  d8x  |   0   | 8-d8x | <- lo
+            PACK2           d8y,          d8y,         d8y ; hi -> |   0   |  d8y  |   0   |  d8y  | <- lo
+            SUB2            k_8,          d8y,         s8y ; hi -> |   0   | 8-d8y |   0   | 8-d8y | <- lo
+            PACKL4          dx,           dx,          dx  ; hi -> |  d8x  | 8-d8x |  d8x  | 8-d8x | <- lo
+            PACKL4          d8y,          s8y,         dy  ; hi -> |  d8y  |  d8y  | 8-d8y | 8-d8y | <- lo
+            MPYU4           dx,           dy,          c_DC:c_BA ; cD = d8x*d8y      cC = (8-d8x)*d8y
+            PACKL4          c_DC,         c_BA,        c_DCBA    ; cB = d8x*(8-d8y)  cA = (8-d8x)*(8-d8y)
+            ; calculate src0 and src1
+            SHR             mvy,          3,           mvyf   ; mvyf = mvy >> 3
+            SHR             mvx,          3,           mvxf   ; mvxf = mvx >> 3
+            MPY             mvyf,         i_src,       offy   ; offy = (mvy >> 3) * i_src
+            SHL             mvxf,         1,           offx   ; offx = (mvx >> 3) * 2
+            ADD             src,          offy,        src0
+            ADD             src0,         offx,        src0   ; src0   = src + (mvy >> 3) * i_src + (mvx >> 3) * 2
+            ADD             src0,         i_src,       src1   ; src1   = src0 + i_src
+            SHR             i_src,        3,           src_8x ; src_8x = i_src >> 3
+            SHR             i_dst,        3,           dst_8x ; dst_8x = i_dst >> 3
+            SUB             i_height,     1,           i      ; i      = i_height - 1
+
+loop_mc_chroma_w8: .trip    4,            8,           4      ; loop count
+
+            ; load 20 bytes of 2 src lines
+            LDNW            *+src0[4],       src_0_JIHG
+            LDNW            *+src1[4],       src_1_JIHG
+            LDNDW           *+src0[1],       src_0_FEDC:src_0_BA98
+            LDNDW           *+src1[1],       src_1_FEDC:src_1_BA98
+            LDNDW           *src0++[src_8x], src_0_7654:src_0_3210
+            LDNDW           *src1++[src_8x], src_1_7654:src_1_3210
+            PACKLH2         src_0_7654,   src_0_3210,  src_0_5432
+            PACKLH2         src_1_7654,   src_1_3210,  src_1_5432
+            PACKLH2         src_0_BA98,   src_0_7654,  src_0_9876
+            PACKLH2         src_1_BA98,   src_1_7654,  src_1_9876
+            PACKLH2         src_0_FEDC,   src_0_BA98,  src_0_DCBA
+            PACKLH2         src_1_FEDC,   src_1_BA98,  src_1_DCBA
+            PACKLH2         src_0_JIHG,   src_0_FEDC,  src_0_HGFE
+            PACKLH2         src_1_JIHG,   src_1_FEDC,  src_1_HGFE
+            ; prepare srcu and srcv
+            PACKL4          src_1_3210,   src_0_3210,  src_2020
+            PACKH4          src_1_3210,   src_0_3210,  src_3131
+            PACKL4          src_1_7654,   src_0_7654,  src_6464
+            PACKH4          src_1_7654,   src_0_7654,  src_7575
+            PACKL4          src_1_BA98,   src_0_BA98,  src_A8A8
+            PACKH4          src_1_BA98,   src_0_BA98,  src_B9B9
+            PACKL4          src_1_FEDC,   src_0_FEDC,  src_ECEC
+            PACKH4          src_1_FEDC,   src_0_FEDC,  src_FDFD
+            PACKL4          src_1_5432,   src_0_5432,  src_4242
+            PACKH4          src_1_5432,   src_0_5432,  src_5353
+            PACKL4          src_1_9876,   src_0_9876,  src_8686
+            PACKH4          src_1_9876,   src_0_9876,  src_9797
+            PACKL4          src_1_DCBA,   src_0_DCBA,  src_CACA
+            PACKH4          src_1_DCBA,   src_0_DCBA,  src_DBDB
+            PACKL4          src_1_HGFE,   src_0_HGFE,  src_GEGE
+            PACKH4          src_1_HGFE,   src_0_HGFE,  src_HFHF
+            ; dstu[x] = (cA*src[2*x] + cB*src[2*x+2] + cC*srcp[2*x] + cD*srcp[2*x+2] + 32) >> 6
+            DOTPU4          src_2020,     c_DCBA,      dst_0
+            DOTPU4          src_4242,     c_DCBA,      dst_1
+            DOTPU4          src_6464,     c_DCBA,      dst_2
+            DOTPU4          src_8686,     c_DCBA,      dst_3
+            DOTPU4          src_A8A8,     c_DCBA,      dst_4
+            DOTPU4          src_CACA,     c_DCBA,      dst_5
+            DOTPU4          src_ECEC,     c_DCBA,      dst_6
+            DOTPU4          src_GEGE,     c_DCBA,      dst_7
+            PACK2           dst_1,        dst_0,       dst_10
+            PACK2           dst_3,        dst_2,       dst_32
+            PACK2           dst_5,        dst_4,       dst_54
+            PACK2           dst_7,        dst_6,       dst_76
+            ADD2            dst_10,       k_32,        dst_10
+            ADD2            dst_32,       k_32,        dst_32
+            ADD2            dst_54,       k_32,        dst_54
+            ADD2            dst_76,       k_32,        dst_76
+            SHR2            dst_10,       6,           dst_10
+            SHR2            dst_32,       6,           dst_32
+            SHR2            dst_54,       6,           dst_54
+            SHR2            dst_76,       6,           dst_76
+            SPACKU4         dst_32,       dst_10,      dstu_3210
+            SPACKU4         dst_76,       dst_54,      dstu_7654
+            ; dstv[x] = (cA*src[2*x+1] + cB*src[2*x+3] + cC*srcp[2*x+1] + cD*srcp[2*x+3] + 32) >> 6
+            DOTPU4          src_3131,     c_DCBA,      dst_0
+            DOTPU4          src_5353,     c_DCBA,      dst_1
+            DOTPU4          src_7575,     c_DCBA,      dst_2
+            DOTPU4          src_9797,     c_DCBA,      dst_3
+            DOTPU4          src_B9B9,     c_DCBA,      dst_4
+            DOTPU4          src_DBDB,     c_DCBA,      dst_5
+            DOTPU4          src_FDFD,     c_DCBA,      dst_6
+            DOTPU4          src_HFHF,     c_DCBA,      dst_7
+            PACK2           dst_1,        dst_0,       dst_10
+            PACK2           dst_3,        dst_2,       dst_32
+            PACK2           dst_5,        dst_4,       dst_54
+            PACK2           dst_7,        dst_6,       dst_76
+            ADD2            dst_10,       k_32,        dst_10
+            ADD2            dst_32,       k_32,        dst_32
+            ADD2            dst_54,       k_32,        dst_54
+            ADD2            dst_76,       k_32,        dst_76
+            SHR2            dst_10,       6,           dst_10
+            SHR2            dst_32,       6,           dst_32
+            SHR2            dst_54,       6,           dst_54
+            SHR2            dst_76,       6,           dst_76
+            SPACKU4         dst_32,       dst_10,      dstv_3210
+            SPACKU4         dst_76,       dst_54,      dstv_7654
+            ; store dstu, dstv
+            STNDW           dstu_7654:dstu_3210, *dstu++[dst_8x]
+            STNDW           dstv_7654:dstv_3210, *dstv++[dst_8x]
+
+   [i]      BDEC            loop_mc_chroma_w8,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* mc_chroma_w4_ti -- motion compensation for chroma plane by width of 4    *;
+;* NOTE: this function suppose i_height be 8/4                              *;
+;* ======================================================================== *;
+		.sect ".text:_mc_chroma_w4_ti"
+        .global _mc_chroma_w4_ti
+_mc_chroma_w4_ti .cproc dstu, dstv, i_dst, src, i_src, mvx, mvy, i_width, i_height
+            .no_mdep
+
+            .reg            src_0_7654:src_0_3210, src_0_BA98
+            .reg            src_1_7654:src_1_3210, src_1_BA98
+            .reg            src_0_5432, src_0_9876
+            .reg            src_1_5432, src_1_9876
+            .reg            src_2020, src_4242, src_6464, src_8686
+            .reg            src_3131, src_5353, src_7575, src_9797
+            .reg            dstu_3210, dstv_3210
+            .reg            dst_0, dst_1, dst_2, dst_3
+            .reg            dst_10, dst_32
+            .reg            d8x, d8y, s8x, s8y, dx, dy
+            .reg            c_DC:c_BA, c_DCBA
+            .reg            mvxf, mvyf, offx, offy
+            .reg            src0, src1, src_8x, dst_4x
+            .reg            k_32, k_8, i
+
+            ; calculate cA, cB, cC, cD
+            MVKL            0x00200020,   k_32
+            MVKH            0x00200020,   k_32             ; k_32 = 0x00200020
+            MVKL            0x00080008,   k_8
+            MVKH            0x00080008,   k_8              ; k_8 = 0x00080008
+            AND             7,            mvx,         d8x ; d8x = mvx&0x07
+            AND             7,            mvy,         d8y ; d8y = mvy&0x07
+            SUB             8,            d8x,         s8x ; s8x = 8 - d8x
+            PACK2           d8x,          s8x,         dx  ; hi -> |   0   |  d8x  |   0   | 8-d8x | <- lo
+            PACK2           d8y,          d8y,         d8y ; hi -> |   0   |  d8y  |   0   |  d8y  | <- lo
+            SUB2            k_8,          d8y,         s8y ; hi -> |   0   | 8-d8y |   0   | 8-d8y | <- lo
+            PACKL4          dx,           dx,          dx  ; hi -> |  d8x  | 8-d8x |  d8x  | 8-d8x | <- lo
+            PACKL4          d8y,          s8y,         dy  ; hi -> |  d8y  |  d8y  | 8-d8y | 8-d8y | <- lo
+            MPYU4           dx,           dy,          c_DC:c_BA ; cD = d8x*d8y      cC = (8-d8x)*d8y
+            PACKL4          c_DC,         c_BA,        c_DCBA    ; cB = d8x*(8-d8y)  cA = (8-d8x)*(8-d8y)
+            ; calculate src0 and src1
+            SHR             mvy,          3,           mvyf   ; mvyf = mvy >> 3
+            SHR             mvx,          3,           mvxf   ; mvxf = mvx >> 3
+            MPY             mvyf,         i_src,       offy   ; offy = (mvy >> 3) * i_src
+            SHL             mvxf,         1,           offx   ; offx = (mvx >> 3) * 2
+            ADD             src,          offy,        src0
+            ADD             src0,         offx,        src0   ; src0   = src + (mvy >> 3) * i_src + (mvx >> 3) * 2
+            ADD             src0,         i_src,       src1   ; src1   = src0 + i_src
+            SHR             i_src,        3,           src_8x ; src_8x = i_src >> 3
+            SHR             i_dst,        2,           dst_4x ; dst_4x = i_dst >> 2
+            SUB             i_height,     1,           i      ; i      = i_height - 1
+
+loop_mc_chroma_w4: .trip    4,            8,           4      ; loop count
+
+            ; load 12 bytes of 2 src lines
+            LDNW            *+src0[2],       src_0_BA98
+            LDNW            *+src1[2],       src_1_BA98
+            LDNDW           *src0++[src_8x], src_0_7654:src_0_3210
+            LDNDW           *src1++[src_8x], src_1_7654:src_1_3210
+            PACKLH2         src_0_7654,   src_0_3210,  src_0_5432
+            PACKLH2         src_1_7654,   src_1_3210,  src_1_5432
+            PACKLH2         src_0_BA98,   src_0_7654,  src_0_9876
+            PACKLH2         src_1_BA98,   src_1_7654,  src_1_9876
+            ; prepare srcu and srcv
+            PACKL4          src_1_3210,   src_0_3210,  src_2020
+            PACKH4          src_1_3210,   src_0_3210,  src_3131
+            PACKL4          src_1_7654,   src_0_7654,  src_6464
+            PACKH4          src_1_7654,   src_0_7654,  src_7575
+            PACKL4          src_1_5432,   src_0_5432,  src_4242
+            PACKH4          src_1_5432,   src_0_5432,  src_5353
+            PACKL4          src_1_9876,   src_0_9876,  src_8686
+            PACKH4          src_1_9876,   src_0_9876,  src_9797
+            ; dstu[x] = (cA*src[2*x] + cB*src[2*x+2] + cC*srcp[2*x] + cD*srcp[2*x+2] + 32) >> 6
+            DOTPU4          src_2020,     c_DCBA,      dst_0
+            DOTPU4          src_4242,     c_DCBA,      dst_1
+            DOTPU4          src_6464,     c_DCBA,      dst_2
+            DOTPU4          src_8686,     c_DCBA,      dst_3
+            PACK2           dst_1,        dst_0,       dst_10
+            PACK2           dst_3,        dst_2,       dst_32
+            ADD2            dst_10,       k_32,        dst_10
+            ADD2            dst_32,       k_32,        dst_32
+            SHR2            dst_10,       6,           dst_10
+            SHR2            dst_32,       6,           dst_32
+            SPACKU4         dst_32,       dst_10,      dstu_3210
+            ; dstv[x] = (cA*src[2*x+1] + cB*src[2*x+3] + cC*srcp[2*x+1] + cD*srcp[2*x+3] + 32) >> 6
+            DOTPU4          src_3131,     c_DCBA,      dst_0
+            DOTPU4          src_5353,     c_DCBA,      dst_1
+            DOTPU4          src_7575,     c_DCBA,      dst_2
+            DOTPU4          src_9797,     c_DCBA,      dst_3
+            PACK2           dst_1,        dst_0,       dst_10
+            PACK2           dst_3,        dst_2,       dst_32
+            ADD2            dst_10,       k_32,        dst_10
+            ADD2            dst_32,       k_32,        dst_32
+            SHR2            dst_10,       6,           dst_10
+            SHR2            dst_32,       6,           dst_32
+            SPACKU4         dst_32,       dst_10,      dstv_3210
+            ; store dstu, dstv
+            STNW            dstu_3210, *dstu++[dst_4x]
+            STNW            dstv_3210, *dstv++[dst_4x]
+
+   [i]      BDEC            loop_mc_chroma_w4,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* mc_copy_w16_ti -- copy pixels by width of 16                             *;
+;* NOTE: this function suppose i_height also be 16                          *;
+;* ======================================================================== *;
+		.sect ".text:_mc_copy_w16_ti"
+        .global _mc_copy_w16_ti
+_mc_copy_w16_ti .cproc dst, i_dst_stride, src, i_src_stride, i_height
+            .no_mdep
+
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            src_8x, dst_8x
+
+            SHR             i_dst_stride, 3, dst_8x ; dst_8x = i_dst_stride >> 3
+            SHR             i_src_stride, 3, src_8x ; src_8x = i_src_stride >> 3
+
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 1
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 1
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 1
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 1
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 2
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 2
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 2
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 2
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 3
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 3
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 3
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 3
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 4
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 4
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 4
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 4
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 5
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 5
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 5
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 5
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 6
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 6
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 6
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 6
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 7
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 7
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 7
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 7
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 8
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 8
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 8
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 8
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 9
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 9
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 9
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 9
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 10
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 10
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 10
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 10
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 11
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 11
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 11
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 11
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 12
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 12
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 12
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 12
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 13
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 13
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 13
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 13
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 14
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 14
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 14
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 14
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 15
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 15
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 15
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 15
+            LDNDW           *+src[1],          pix_FEDC:pix_BA98 ; load upper 8 bytes from src line 16
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load lower 8 bytes from src line 16
+            STNDW           pix_FEDC:pix_BA98, *+dst[1]          ; store upper 8 bytes to dst line 16
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store lower 8 bytes to dst line 16
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* mc_copy_w8_ti -- copy pixels by width of 8                               *;
+;* NOTE: this function suppose i_height also be 8                           *;
+;* ======================================================================== *;
+		.sect ".text:_mc_copy_w8_ti"
+        .global _mc_copy_w8_ti
+_mc_copy_w8_ti .cproc dst, i_dst_stride, src, i_src_stride, i_height
+            .no_mdep
+
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            src_8x, dst_8x
+
+            SHR             i_dst_stride, 3, dst_8x ; dst_8x = i_dst_stride >> 3
+            SHR             i_src_stride, 3, src_8x ; src_8x = i_src_stride >> 3
+
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load 8 bytes from src line 1
+            LDNDW           *src++[src_8x],    pix_FEDC:pix_BA98 ; load 8 bytes from src line 2
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store 8 bytes to dst line 1
+            STNDW           pix_FEDC:pix_BA98, *dst++[dst_8x]    ; store 8 bytes to dst line 2
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load 8 bytes from src line 3
+            LDNDW           *src++[src_8x],    pix_FEDC:pix_BA98 ; load 8 bytes from src line 4
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store 8 bytes to dst line 3
+            STNDW           pix_FEDC:pix_BA98, *dst++[dst_8x]    ; store 8 bytes to dst line 4
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load 8 bytes from src line 5
+            LDNDW           *src++[src_8x],    pix_FEDC:pix_BA98 ; load 8 bytes from src line 6
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store 8 bytes to dst line 5
+            STNDW           pix_FEDC:pix_BA98, *dst++[dst_8x]    ; store 8 bytes to dst line 6
+            LDNDW           *src++[src_8x],    pix_7654:pix_3210 ; load 8 bytes from src line 7
+            LDNDW           *src++[src_8x],    pix_FEDC:pix_BA98 ; load 8 bytes from src line 8
+            STNDW           pix_7654:pix_3210, *dst++[dst_8x]    ; store 8 bytes to dst line 7
+            STNDW           pix_FEDC:pix_BA98, *dst++[dst_8x]    ; store 8 bytes to dst line 8
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* mc_copy_w4_ti -- copy pixels by width of 4                               *;
+;* NOTE: this function suppose i_height also be 4                           *;
+;* ======================================================================== *;
+		.sect ".text:_mc_copy_w4_ti"
+        .global _mc_copy_w4_ti
+_mc_copy_w4_ti .cproc dst, i_dst_stride, src, i_src_stride, i_height
+            .no_mdep
+
+            .reg            pix_7654
+            .reg            pix_3210
+            .reg            src_4x, dst_4x
+
+            SHR             i_dst_stride, 2, dst_4x ; dst_4x = i_dst_stride >> 2
+            SHR             i_src_stride, 2, src_4x ; src_4x = i_src_stride >> 2
+
+            LDNW            *src++[src_4x], pix_3210 ; load 4 bytes from src line 1
+            LDNW            *src++[src_4x], pix_7654 ; load 4 bytes from src line 2
+            STNW            pix_3210, *dst++[dst_4x] ; store 4 bytes to dst line 1
+            STNW            pix_7654, *dst++[dst_4x] ; store 4 bytes to dst line 2
+            LDNW            *src++[src_4x], pix_3210 ; load 4 bytes from src line 3
+            LDNW            *src++[src_4x], pix_7654 ; load 4 bytes from src line 4
+            STNW            pix_3210, *dst++[dst_4x] ; store 4 bytes to dst line 3
+            STNW            pix_7654, *dst++[dst_4x] ; store 4 bytes to dst line 4
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_plane_deinterlace_ti -- plane deinterlace                           *;
+;* ======================================================================== *;
+		.sect ".text:_x264_plane_deinterlace_ti"
+        .global _x264_plane_deinterlace_ti
+_x264_plane_deinterlace_ti .cproc pixy, i_pixy, pixc, i_pixc, i_width, i_height
+            .no_mdep
+
+            .reg            pixyx_7654:pixyx_3210
+            .reg            pixy0_7654:pixy0_3210
+            .reg            pixy1_7654:pixy1_3210
+            .reg            pixy2_7654:pixy2_3210
+            .reg            pixy3_7654:pixy3_3210
+            .reg            pixy4_7654:pixy4_3210
+            .reg            avgy0_3210, avgy0_7654
+            .reg            avgy1_3210, avgy1_7654
+            .reg            avgy2_3210, avgy2_7654
+            .reg            avgy3_3210, avgy3_7654
+            .reg            pixyx, pixy0, pixy1, pixy2, pixy3, pixy4
+            .reg            pixy_lo_rt:pixy_lo_lt
+            .reg            pixy_hi_rt:pixy_hi_lt
+            .reg            pixy_hi_ct:pixy_lo_ct
+            .reg            pixy_mi_lt, pixy_mi_rt
+            .reg            pixy_cr, pixy_cl
+            .reg            pixy_lo_tp, pixy_mi_tp, pixy_hi_tp
+            .reg            avgy_rt_lo, avgy_rt_hi, avgy_lt_lo, avgy_lt_hi
+            .reg            diff_rt, diff_lt, diff_ct
+            .reg            fav_ct, fav_ct1, fav_ct2, fav_rt
+            .reg            diff_0, diff_1, diff_2, diff_3
+            .reg            diff_4, diff_5, diff_6, diff_7
+            .reg            sad_0, sad_1, sad, thresh
+            .reg            pixy_2y, pixy_4y
+            .reg            b8x, b4y, i, j, k, k_1
+
+            MVK             256,          thresh
+            MVKL            0x01010101,   k_1
+            MVKH            0x01010101,   k_1
+            SHL             i_pixy,       1,            pixy_2y
+            SHL             i_pixy,       2,            pixy_4y
+            SHR             i_width,      3,            b8x
+            SHR             i_height,     2,            b4y
+            SUB             b8x,          1,            b8x
+            SUB             b4y,          1,            b4y
+            MV              b4y,          i
+
+loop_plane_deint_y:
+            MV              pixy,         pixy0
+            SUB             pixy,         i_pixy,       pixyx
+            ADD             pixy,         i_pixy,       pixy1
+            ADD             pixy0,        pixy_2y,      pixy2
+            ADD             pixy1,        pixy_2y,      pixy3
+            ADD             pixy2,        pixy_2y,      pixy4
+            ADD             pixy,         pixy_4y,      pixy
+            CMPEQ           i,            b4y,          k
+   [k]      MV              pixy0,        pixyx
+   [!i]     MV              pixy3,        pixy4
+            MV              b8x,          j
+
+loop_plane_deint_x: .trip   32,           160,          1      ; width limit (256 ~ 1280)
+            LDNDW           *pixyx++,     pixyx_7654:pixyx_3210
+            LDNDW           *pixy0++,     pixy0_7654:pixy0_3210
+            LDNDW           *pixy1++,     pixy1_7654:pixy1_3210
+            LDNDW           *pixy2++,     pixy2_7654:pixy2_3210
+            LDNDW           *pixy3++,     pixy3_7654:pixy3_3210
+            LDNDW           *pixy4++,     pixy4_7654:pixy4_3210
+            ; linear interpolation to make up two complete fields
+            AVGU4           pixyx_3210,   pixy1_3210,   avgy0_3210
+            AVGU4           pixyx_7654,   pixy1_7654,   avgy0_7654
+            AVGU4           pixy0_3210,   pixy2_3210,   avgy1_3210
+            AVGU4           pixy0_7654,   pixy2_7654,   avgy1_7654
+            AVGU4           pixy1_3210,   pixy3_3210,   avgy2_3210
+            AVGU4           pixy1_7654,   pixy3_7654,   avgy2_7654
+            AVGU4           pixy2_3210,   pixy4_3210,   avgy3_3210
+            AVGU4           pixy2_7654,   pixy4_7654,   avgy3_7654
+
+            ; motion detect of two 4x4 blocks
+            SUBABS4         pixy0_3210,   avgy0_3210,   diff_0
+            SUBABS4         pixy1_3210,   avgy1_3210,   diff_1
+            SUBABS4         pixy2_3210,   avgy2_3210,   diff_2
+            SUBABS4         pixy3_3210,   avgy3_3210,   diff_3
+            SUBABS4         pixy0_7654,   avgy0_7654,   diff_4
+            SUBABS4         pixy1_7654,   avgy1_7654,   diff_5
+            SUBABS4         pixy2_7654,   avgy2_7654,   diff_6
+            SUBABS4         pixy3_7654,   avgy3_7654,   diff_7
+            DOTPU4          diff_0,       k_1,          diff_0
+            DOTPU4          diff_1,       k_1,          diff_1
+            DOTPU4          diff_2,       k_1,          diff_2
+            DOTPU4          diff_3,       k_1,          diff_3
+            DOTPU4          diff_4,       k_1,          diff_4
+            DOTPU4          diff_5,       k_1,          diff_5
+            DOTPU4          diff_6,       k_1,          diff_6
+            DOTPU4          diff_7,       k_1,          diff_7
+            ; sad_0 = diff_0 + diff_1 + diff_2 + diff_3
+            ; sad_1 = diff_4 + diff_5 + diff_6 + diff_7
+            ADD             diff_0,       diff_1,       sad_0
+            ADD             diff_4,       diff_5,       sad_1
+            ADD             sad_0,        diff_2,       sad_0
+            ADD             sad_1,        diff_6,       sad_1
+            ADD             sad_0,        diff_3,       sad_0
+            ADD             sad_1,        diff_7,       sad_1
+            ; compare sad with thresh to check motion part
+            CMPLT           sad_0,        thresh,       sad_0
+            CMPLT           sad_1,        thresh,       sad_1
+            AND             sad_0,        sad_1,        sad
+   [sad]    B               loop_plane_deint_end
+
+loop_plane_deint_0:
+   [sad_0]  B               loop_plane_deint_1
+            ; motion direction check (vertical-center, vertical-right, vertical-left)
+            DPACK2          pixy2_3210,   pixy0_3210,   pixy_lo_rt:pixy_lo_lt
+            DPACK2          pixy4_3210,   pixy2_3210,   pixy_hi_rt:pixy_hi_lt
+            PACKL4          pixy_hi_rt,   pixy_lo_rt,   pixy_cr
+            PACKH4          pixy_hi_lt,   pixy_lo_lt,   pixy_cl
+            DPACK2          pixy_cr,      pixy_cl,      pixy_hi_ct:pixy_lo_ct
+            SUBABS4         pixy_lo_lt,   pixy_hi_rt,   diff_rt
+            SUBABS4         pixy_lo_rt,   pixy_hi_lt,   diff_lt
+            SUBABS4         pixy_lo_ct,   pixy_hi_ct,   diff_ct
+            DOTPU4          diff_rt,      k_1,          diff_rt
+            DOTPU4          diff_lt,      k_1,          diff_lt
+            DOTPU4          diff_ct,      k_1,          diff_ct
+            CMPLT           diff_ct,      diff_rt,      fav_ct1
+            CMPLT           diff_ct,      diff_lt,      fav_ct2
+            CMPLT           diff_rt,      diff_lt,      fav_rt
+            AND             fav_ct1,      fav_ct2,      fav_ct
+loop_plane_deint_0_ct:
+  [!fav_ct] B               loop_plane_deint_0_rt
+            STNW            avgy1_3210,   *-pixy1[2]
+            STNW            avgy3_3210,   *-pixy3[2]
+            B               loop_plane_deint_1
+loop_plane_deint_0_rt:
+  [!fav_rt] B               loop_plane_deint_0_lt
+            SHRMB           pixy2_7654,   pixy2_3210,   pixy_mi_rt
+            SHRMB           pixy4_7654,   pixy4_3210,   pixy_hi_rt
+            ROTL            pixy0_3210,   24,           pixy_lo_tp
+            ROTL            pixy2_3210,   24,           pixy_mi_tp
+            SHLMB           pixy_lo_tp,   pixy0_3210,   pixy_lo_lt
+            SHLMB           pixy_mi_tp,   pixy2_3210,   pixy_mi_lt
+            AVGU4           pixy_lo_lt,   pixy_mi_rt,   avgy_rt_lo
+            AVGU4           pixy_mi_lt,   pixy_hi_rt,   avgy_rt_hi
+            STNW            avgy_rt_lo,   *-pixy1[2]
+            STNW            avgy_rt_hi,   *-pixy3[2]
+            B               loop_plane_deint_1
+loop_plane_deint_0_lt:
+            SHRMB           pixy0_7654,   pixy0_3210,   pixy_lo_rt
+            SHRMB           pixy2_7654,   pixy2_3210,   pixy_mi_rt
+            ROTL            pixy2_3210,   24,           pixy_mi_tp
+            ROTL            pixy4_3210,   24,           pixy_hi_tp
+            SHLMB           pixy_mi_tp,   pixy2_3210,   pixy_mi_lt
+            SHLMB           pixy_hi_tp,   pixy4_3210,   pixy_hi_lt
+            AVGU4           pixy_lo_rt,   pixy_mi_lt,   avgy_lt_lo
+            AVGU4           pixy_mi_rt,   pixy_hi_lt,   avgy_lt_hi
+            STNW            avgy_lt_lo,   *-pixy1[2]
+            STNW            avgy_lt_hi,   *-pixy3[2]
+
+loop_plane_deint_1:
+   [sad_1]  B               loop_plane_deint_end
+            ; motion direction check (vertical-center, vertical-right, vertical-left)
+            DPACK2          pixy2_7654,   pixy0_7654,   pixy_lo_rt:pixy_lo_lt
+            DPACK2          pixy4_7654,   pixy2_7654,   pixy_hi_rt:pixy_hi_lt
+            PACKL4          pixy_hi_rt,   pixy_lo_rt,   pixy_cr
+            PACKH4          pixy_hi_lt,   pixy_lo_lt,   pixy_cl
+            DPACK2          pixy_cr,      pixy_cl,      pixy_hi_ct:pixy_lo_ct
+            SUBABS4         pixy_lo_lt,   pixy_hi_rt,   diff_rt
+            SUBABS4         pixy_lo_rt,   pixy_hi_lt,   diff_lt
+            SUBABS4         pixy_lo_ct,   pixy_hi_ct,   diff_ct
+            DOTPU4          diff_rt,      k_1,          diff_rt
+            DOTPU4          diff_lt,      k_1,          diff_lt
+            DOTPU4          diff_ct,      k_1,          diff_ct
+            CMPLT           diff_ct,      diff_rt,      fav_ct1
+            CMPLT           diff_ct,      diff_lt,      fav_ct2
+            CMPLT           diff_rt,      diff_lt,      fav_rt
+            AND             fav_ct1,      fav_ct2,      fav_ct
+loop_plane_deint_1_ct:
+  [!fav_ct] B               loop_plane_deint_1_rt
+            STNW            avgy1_7654,   *-pixy1[1]
+            STNW            avgy3_7654,   *-pixy3[1]
+            B               loop_plane_deint_end
+loop_plane_deint_1_rt:
+  [!fav_rt] B               loop_plane_deint_1_lt
+            SHLMB           pixy0_3210,   pixy0_7654,   pixy_lo_lt
+            SHLMB           pixy2_3210,   pixy2_7654,   pixy_mi_lt
+            ROTL            pixy2_7654,   8,            pixy_mi_tp
+            ROTL            pixy4_7654,   8,            pixy_hi_tp
+            SHRMB           pixy_mi_tp,   pixy2_7654,   pixy_mi_rt
+            SHRMB           pixy_hi_tp,   pixy4_7654,   pixy_hi_rt
+            AVGU4           pixy_lo_lt,   pixy_mi_rt,   avgy_rt_lo
+            AVGU4           pixy_mi_lt,   pixy_hi_rt,   avgy_rt_hi
+            STNW            avgy_rt_lo,   *-pixy1[1]
+            STNW            avgy_rt_hi,   *-pixy3[1]
+            B               loop_plane_deint_end
+loop_plane_deint_1_lt:
+            SHLMB           pixy2_3210,   pixy2_7654,   pixy_mi_lt
+            SHLMB           pixy4_3210,   pixy4_7654,   pixy_hi_lt
+            ROTL            pixy0_7654,   8,            pixy_lo_tp
+            ROTL            pixy2_7654,   8,            pixy_mi_tp
+            SHRMB           pixy_lo_tp,   pixy0_7654,   pixy_lo_rt
+            SHRMB           pixy_mi_tp,   pixy2_7654,   pixy_mi_rt
+            AVGU4           pixy_lo_rt,   pixy_mi_lt,   avgy_lt_lo
+            AVGU4           pixy_mi_rt,   pixy_hi_lt,   avgy_lt_hi
+            STNW            avgy_lt_lo,   *-pixy1[1]
+            STNW            avgy_lt_hi,   *-pixy3[1]
+
+loop_plane_deint_end:
+   [j]      BDEC            loop_plane_deint_x,  j
+
+   [i]      BDEC            loop_plane_deint_y,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_plane_copy_deinterlace_ti -- plane copy with deinterlacing          *;
+;* ======================================================================== *;
+		.sect ".text:_x264_plane_copy_deinterlace_ti"
+        .global _x264_plane_copy_deinterlace_ti
+_x264_plane_copy_deinterlace_ti .cproc dsty, i_dsty, srcy, i_srcy, dstc, i_dstc, srcc, i_srcc, i_width, i_height
+            .no_mdep
+
+            .reg            pixyx_7654:pixyx_3210
+            .reg            pixy0_7654:pixy0_3210
+            .reg            pixy1_7654:pixy1_3210
+            .reg            pixy2_7654:pixy2_3210
+            .reg            pixy3_7654:pixy3_3210
+            .reg            pixy4_7654:pixy4_3210
+            .reg            avgy0_3210, avgy0_7654
+            .reg            avgy1_3210, avgy1_7654
+            .reg            avgy2_3210, avgy2_7654
+            .reg            avgy3_3210, avgy3_7654
+            .reg            srcyx, srcy0, srcy1, srcy2, srcy3, srcy4
+            .reg            dsty0, dsty1, dsty2, dsty3
+            .reg            pixy_lo_rt:pixy_lo_lt
+            .reg            pixy_hi_rt:pixy_hi_lt
+            .reg            pixy_hi_ct:pixy_lo_ct
+            .reg            pixy_mi_lt, pixy_mi_rt
+            .reg            pixy_cr, pixy_cl
+            .reg            pixy_lo_tp, pixy_mi_tp, pixy_hi_tp
+            .reg            avgy_rt_lo, avgy_rt_hi, avgy_lt_lo, avgy_lt_hi
+            .reg            diff_rt, diff_lt, diff_ct
+            .reg            fav_ct, fav_ct1, fav_ct2, fav_rt
+            .reg            pixc0_7654:pixc0_3210
+            .reg            pixc1_7654:pixc1_3210
+            .reg            pixc2_7654:pixc2_3210
+            .reg            pixc3_7654:pixc3_3210
+            .reg            avgc0_3210, avgc0_7654
+            .reg            avgc2_3210, avgc2_7654
+            .reg            srcc0, srcc1, srcc2, srcc3
+            .reg            dstc0, dstc1
+            .reg            diff_0, diff_1, diff_2, diff_3
+            .reg            diff_4, diff_5, diff_6, diff_7
+            .reg            sad_0, sad_1, sad, thresh
+            .reg            srcy_2y, srcy_4y, dsty_2y, dsty_4y
+            .reg            srcc_2y, srcc_4y, dstc_2y
+            .reg            b8x, b4y, i, j, k, k_1
+
+            MVK             256,          thresh
+            MVKL            0x01010101,   k_1
+            MVKH            0x01010101,   k_1
+            SHL             i_srcy,       1,            srcy_2y
+            SHL             i_srcy,       2,            srcy_4y
+            SHL             i_dsty,       1,            dsty_2y
+            SHL             i_dsty,       2,            dsty_4y
+            SHL             i_srcc,       1,            srcc_2y
+            SHL             i_srcc,       2,            srcc_4y
+            SHL             i_dstc,       1,            dstc_2y
+            SHR             i_width,      3,            b8x
+            SHR             i_height,     2,            b4y
+            SUB             b8x,          1,            b8x
+            SUB             b4y,          1,            b4y
+            MV              b4y,          i
+
+loop_plane_copy_deint_y:
+            MV              srcy,         srcy0
+            SUB             srcy,         i_srcy,       srcyx
+            ADD             srcy,         i_srcy,       srcy1
+            ADD             srcy0,        srcy_2y,      srcy2
+            ADD             srcy1,        srcy_2y,      srcy3
+            ADD             srcy2,        srcy_2y,      srcy4
+            ADD             srcy,         srcy_4y,      srcy
+            MV              dsty,         dsty0
+            ADD             dsty,         i_dsty,       dsty1
+            ADD             dsty0,        dsty_2y,      dsty2
+            ADD             dsty1,        dsty_2y,      dsty3
+            ADD             dsty,         dsty_4y,      dsty
+            MV              srcc,         srcc0
+            ADD             srcc,         i_srcc,       srcc1
+            ADD             srcc0,        srcc_2y,      srcc2
+            ADD             srcc1,        srcc_2y,      srcc3
+            ADD             srcc,         srcc_4y,      srcc
+            MV              dstc,         dstc0
+            ADD             dstc,         i_dstc,       dstc1
+            ADD             dstc,         dstc_2y,      dstc
+            CMPEQ           i,            b4y,          k
+   [k]      MV              srcy0,        srcyx
+   [!i]     MV              srcy3,        srcy4
+            MV              b8x,          j
+
+loop_plane_copy_deint_x: .trip 32,        160,          1      ; width limit (256 ~ 1280)
+
+            ; load luma pixels from src plane
+            LDNDW           *srcyx++,     pixyx_7654:pixyx_3210
+            LDNDW           *srcy0++,     pixy0_7654:pixy0_3210
+            LDNDW           *srcy1++,     pixy1_7654:pixy1_3210
+            LDNDW           *srcy2++,     pixy2_7654:pixy2_3210
+            LDNDW           *srcy3++,     pixy3_7654:pixy3_3210
+            LDNDW           *srcy4++,     pixy4_7654:pixy4_3210
+            ; linear interpolation to make up two complete fields
+            AVGU4           pixyx_3210,   pixy1_3210,   avgy0_3210
+            AVGU4           pixyx_7654,   pixy1_7654,   avgy0_7654
+            AVGU4           pixy0_3210,   pixy2_3210,   avgy1_3210
+            AVGU4           pixy0_7654,   pixy2_7654,   avgy1_7654
+            AVGU4           pixy1_3210,   pixy3_3210,   avgy2_3210
+            AVGU4           pixy1_7654,   pixy3_7654,   avgy2_7654
+            AVGU4           pixy2_3210,   pixy4_3210,   avgy3_3210
+            AVGU4           pixy2_7654,   pixy4_7654,   avgy3_7654
+
+            ; load chroma pixels from src plane
+            LDNDW           *srcc0++,     pixc0_7654:pixc0_3210
+            LDNDW           *srcc1++,     pixc1_7654:pixc1_3210
+            LDNDW           *srcc2++,     pixc2_7654:pixc2_3210
+            LDNDW           *srcc3++,     pixc3_7654:pixc3_3210
+            ; linear interpolation for chroma sub-sampling
+            AVGU4           pixc0_3210,   pixc1_3210,   avgc0_3210
+            AVGU4           pixc0_7654,   pixc1_7654,   avgc0_7654
+            AVGU4           pixc2_3210,   pixc3_3210,   avgc2_3210
+            AVGU4           pixc2_7654,   pixc3_7654,   avgc2_7654
+
+            ; motion detect of two 4x4 blocks
+            SUBABS4         pixy0_3210,   avgy0_3210,   diff_0
+            SUBABS4         pixy1_3210,   avgy1_3210,   diff_1
+            SUBABS4         pixy2_3210,   avgy2_3210,   diff_2
+            SUBABS4         pixy3_3210,   avgy3_3210,   diff_3
+            SUBABS4         pixy0_7654,   avgy0_7654,   diff_4
+            SUBABS4         pixy1_7654,   avgy1_7654,   diff_5
+            SUBABS4         pixy2_7654,   avgy2_7654,   diff_6
+            SUBABS4         pixy3_7654,   avgy3_7654,   diff_7
+            DOTPU4          diff_0,       k_1,          diff_0
+            DOTPU4          diff_1,       k_1,          diff_1
+            DOTPU4          diff_2,       k_1,          diff_2
+            DOTPU4          diff_3,       k_1,          diff_3
+            DOTPU4          diff_4,       k_1,          diff_4
+            DOTPU4          diff_5,       k_1,          diff_5
+            DOTPU4          diff_6,       k_1,          diff_6
+            DOTPU4          diff_7,       k_1,          diff_7
+            ; sad_0 = diff_0 + diff_1 + diff_2 + diff_3
+            ; sad_1 = diff_4 + diff_5 + diff_6 + diff_7
+            ADD             diff_0,       diff_1,       sad_0
+            ADD             diff_4,       diff_5,       sad_1
+            ADD             sad_0,        diff_2,       sad_0
+            ADD             sad_1,        diff_6,       sad_1
+            ADD             sad_0,        diff_3,       sad_0
+            ADD             sad_1,        diff_7,       sad_1
+            ; compare sad with thresh to check motion part
+            CMPLT           sad_0,        thresh,       sad_0
+            CMPLT           sad_1,        thresh,       sad_1
+            AND             sad_0,        sad_1,        sad
+  [!sad]    B               loop_plane_copy_deint_0_bgn
+
+            ; copy pixels for whole still part
+            STNDW           pixy0_7654:pixy0_3210, *dsty0++
+            STNDW           pixy1_7654:pixy1_3210, *dsty1++
+            STNDW           pixy2_7654:pixy2_3210, *dsty2++
+            STNDW           pixy3_7654:pixy3_3210, *dsty3++
+            STNDW           avgc0_7654:avgc0_3210, *dstc0++
+            STNDW           avgc2_7654:avgc2_3210, *dstc1++
+            B               loop_plane_copy_deint_end
+
+loop_plane_copy_deint_0_bgn:
+   [!sad_0] B               loop_plane_copy_deint_0_fix
+            STNW            pixy0_3210,   *dsty0++
+            STNW            pixy1_3210,   *dsty1++
+            STNW            pixy2_3210,   *dsty2++
+            STNW            pixy3_3210,   *dsty3++
+            STNW            avgc0_3210,   *dstc0++
+            STNW            avgc2_3210,   *dstc1++
+            B               loop_plane_copy_deint_1_bgn
+loop_plane_copy_deint_0_fix:
+            STNW            pixy0_3210,   *dsty0++
+            STNW            pixy2_3210,   *dsty2++
+            STNW            pixc0_3210,   *dstc0++
+            STNW            pixc2_3210,   *dstc1++
+
+            ; motion direction check (vertical-center, vertical-right, vertical-left)
+            DPACK2          pixy2_3210,   pixy0_3210,   pixy_lo_rt:pixy_lo_lt
+            DPACK2          pixy4_3210,   pixy2_3210,   pixy_hi_rt:pixy_hi_lt
+            PACKL4          pixy_hi_rt,   pixy_lo_rt,   pixy_cr
+            PACKH4          pixy_hi_lt,   pixy_lo_lt,   pixy_cl
+            DPACK2          pixy_cr,      pixy_cl,      pixy_hi_ct:pixy_lo_ct
+            SUBABS4         pixy_lo_lt,   pixy_hi_rt,   diff_rt
+            SUBABS4         pixy_lo_rt,   pixy_hi_lt,   diff_lt
+            SUBABS4         pixy_lo_ct,   pixy_hi_ct,   diff_ct
+            DOTPU4          diff_rt,      k_1,          diff_rt
+            DOTPU4          diff_lt,      k_1,          diff_lt
+            DOTPU4          diff_ct,      k_1,          diff_ct
+            CMPLT           diff_ct,      diff_rt,      fav_ct1
+            CMPLT           diff_ct,      diff_lt,      fav_ct2
+            CMPLT           diff_rt,      diff_lt,      fav_rt
+            AND             fav_ct1,      fav_ct2,      fav_ct
+loop_plane_copy_deint_0_ct:
+  [!fav_ct] B               loop_plane_copy_deint_0_rt
+            STNW            avgy1_3210,   *dsty1++
+            STNW            avgy3_3210,   *dsty3++
+            B               loop_plane_copy_deint_1_bgn
+loop_plane_copy_deint_0_rt:
+  [!fav_rt] B               loop_plane_copy_deint_0_lt
+            SHRMB           pixy2_7654,   pixy2_3210,   pixy_mi_rt
+            SHRMB           pixy4_7654,   pixy4_3210,   pixy_hi_rt
+            ROTL            pixy0_3210,   24,           pixy_lo_tp
+            ROTL            pixy2_3210,   24,           pixy_mi_tp
+            SHLMB           pixy_lo_tp,   pixy0_3210,   pixy_lo_lt
+            SHLMB           pixy_mi_tp,   pixy2_3210,   pixy_mi_lt
+            AVGU4           pixy_lo_lt,   pixy_mi_rt,   avgy_rt_lo
+            AVGU4           pixy_mi_lt,   pixy_hi_rt,   avgy_rt_hi
+            STNW            avgy_rt_lo,   *dsty1++
+            STNW            avgy_rt_hi,   *dsty3++
+            B               loop_plane_copy_deint_1_bgn
+loop_plane_copy_deint_0_lt:
+            SHRMB           pixy0_7654,   pixy0_3210,   pixy_lo_rt
+            SHRMB           pixy2_7654,   pixy2_3210,   pixy_mi_rt
+            ROTL            pixy2_3210,   24,           pixy_mi_tp
+            ROTL            pixy4_3210,   24,           pixy_hi_tp
+            SHLMB           pixy_mi_tp,   pixy2_3210,   pixy_mi_lt
+            SHLMB           pixy_hi_tp,   pixy4_3210,   pixy_hi_lt
+            AVGU4           pixy_lo_rt,   pixy_mi_lt,   avgy_lt_lo
+            AVGU4           pixy_mi_rt,   pixy_hi_lt,   avgy_lt_hi
+            STNW            avgy_lt_lo,   *dsty1++
+            STNW            avgy_lt_hi,   *dsty3++
+
+loop_plane_copy_deint_1_bgn:
+   [!sad_1] B               loop_plane_copy_deint_1_fix
+            STNW            pixy0_7654,   *dsty0++
+            STNW            pixy1_7654,   *dsty1++
+            STNW            pixy2_7654,   *dsty2++
+            STNW            pixy3_7654,   *dsty3++
+            STNW            avgc0_7654,   *dstc0++
+            STNW            avgc2_7654,   *dstc1++
+            B               loop_plane_copy_deint_end
+loop_plane_copy_deint_1_fix:
+            STNW            pixy0_7654,   *dsty0++
+            STNW            pixy2_7654,   *dsty2++
+            STNW            pixc0_7654,   *dstc0++
+            STNW            pixc2_7654,   *dstc1++
+
+            ; motion direction check (vertical-center, vertical-right, vertical-left)
+            DPACK2          pixy2_7654,   pixy0_7654,   pixy_lo_rt:pixy_lo_lt
+            DPACK2          pixy4_7654,   pixy2_7654,   pixy_hi_rt:pixy_hi_lt
+            PACKL4          pixy_hi_rt,   pixy_lo_rt,   pixy_cr
+            PACKH4          pixy_hi_lt,   pixy_lo_lt,   pixy_cl
+            DPACK2          pixy_cr,      pixy_cl,      pixy_hi_ct:pixy_lo_ct
+            SUBABS4         pixy_lo_lt,   pixy_hi_rt,   diff_rt
+            SUBABS4         pixy_lo_rt,   pixy_hi_lt,   diff_lt
+            SUBABS4         pixy_lo_ct,   pixy_hi_ct,   diff_ct
+            DOTPU4          diff_rt,      k_1,          diff_rt
+            DOTPU4          diff_lt,      k_1,          diff_lt
+            DOTPU4          diff_ct,      k_1,          diff_ct
+            CMPLT           diff_ct,      diff_rt,      fav_ct1
+            CMPLT           diff_ct,      diff_lt,      fav_ct2
+            CMPLT           diff_rt,      diff_lt,      fav_rt
+            AND             fav_ct1,      fav_ct2,      fav_ct
+loop_plane_copy_deint_1_ct:
+  [!fav_ct] B               loop_plane_copy_deint_1_rt
+            STNW            avgy1_7654,   *dsty1++
+            STNW            avgy3_7654,   *dsty3++
+            B               loop_plane_copy_deint_end
+loop_plane_copy_deint_1_rt:
+  [!fav_rt] B               loop_plane_copy_deint_1_lt
+            SHLMB           pixy0_3210,   pixy0_7654,   pixy_lo_lt
+            SHLMB           pixy2_3210,   pixy2_7654,   pixy_mi_lt
+            ROTL            pixy2_7654,   8,            pixy_mi_tp
+            ROTL            pixy4_7654,   8,            pixy_hi_tp
+            SHRMB           pixy_mi_tp,   pixy2_7654,   pixy_mi_rt
+            SHRMB           pixy_hi_tp,   pixy4_7654,   pixy_hi_rt
+            AVGU4           pixy_lo_lt,   pixy_mi_rt,   avgy_rt_lo
+            AVGU4           pixy_mi_lt,   pixy_hi_rt,   avgy_rt_hi
+            STNW            avgy_rt_lo,   *dsty1++
+            STNW            avgy_rt_hi,   *dsty3++
+            B               loop_plane_copy_deint_end
+loop_plane_copy_deint_1_lt:
+            SHLMB           pixy2_3210,   pixy2_7654,   pixy_mi_lt
+            SHLMB           pixy4_3210,   pixy4_7654,   pixy_hi_lt
+            ROTL            pixy0_7654,   8,            pixy_lo_tp
+            ROTL            pixy2_7654,   8,            pixy_mi_tp
+            SHRMB           pixy_lo_tp,   pixy0_7654,   pixy_lo_rt
+            SHRMB           pixy_mi_tp,   pixy2_7654,   pixy_mi_rt
+            AVGU4           pixy_lo_rt,   pixy_mi_lt,   avgy_lt_lo
+            AVGU4           pixy_mi_rt,   pixy_hi_lt,   avgy_lt_hi
+            STNW            avgy_lt_lo,   *dsty1++
+            STNW            avgy_lt_hi,   *dsty3++
+
+loop_plane_copy_deint_end:
+   [j]      BDEC            loop_plane_copy_deint_x,  j
+
+   [i]      BDEC            loop_plane_copy_deint_y,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_plane_copy_ti -- copy plane data                                    *;
+;* NOTE: this function suppose i_width be multiple of 16                    *;
+;* ======================================================================== *;
+		.sect ".text:_x264_plane_copy_ti"
+        .global _x264_plane_copy_ti
+_x264_plane_copy_ti .cproc dst, i_dst, src, i_src, i_width, i_height
+            .no_mdep
+
+            .reg            pix_FEDC:pix_BA98
+            .reg            pix_7654:pix_3210
+            .reg            srcp, dstp
+            .reg            i, j, loops
+
+            SHR             i_width,      4,           loops
+            SUB             loops,        1,           loops  ; loops = (i_width >> 4) - 1
+            SUB             i_height,     1,           i      ; i = i_height - 1
+
+loop_plane_copy_i:
+
+            MV              src,          srcp                ; srcp = src
+            MV              dst,          dstp                ; dstp = dst
+            ADD             src,          i_src,       src    ; src += i_src
+            ADD             dst,          i_dst,       dst    ; dst += i_dst
+            MV              loops,        j                   ; j = loops
+
+loop_plane_copy_j:
+            LDNDW           *srcp++,       pix_7654:pix_3210 ; load lower 8 bytes from src
+            LDNDW           *srcp++,       pix_FEDC:pix_BA98 ; load upper 8 bytes from src
+            STNDW           pix_7654:pix_3210, *dstp++       ; store lower 8 bytes to dst
+            STNDW           pix_FEDC:pix_BA98, *dstp++       ; store upper 8 bytes to dst
+   [j]      BDEC            loop_plane_copy_j,  j
+
+   [i]      BDEC            loop_plane_copy_i,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_plane_copy_interleave_ti -- copy plane data with interleaved        *;
+;* NOTE: this function suppose i_width be multiple of 16                    *;
+;* ======================================================================== *;
+		.sect ".text:_x264_plane_copy_interleave_ti"
+        .global _x264_plane_copy_interleave_ti
+_x264_plane_copy_interleave_ti .cproc dst, i_dst, srcu, i_srcu, srcv, i_srcv, i_width, i_height
+            .no_mdep
+
+            .reg            srcu_7654:srcu_3210
+            .reg            srcv_7654:srcv_3210
+            .reg            dst_7766:dst_5544
+            .reg            dst_3322:dst_1100
+            .reg            dst_2020, dst_3131
+            .reg            dst_6464, dst_7575
+            .reg            srcup, srcvp, dstp
+            .reg            i, j, loops
+
+            SHR             i_width,      3,           loops
+            SUB             loops,        1,           loops  ; loops = (i_width >> 3) - 1
+            SUB             i_height,     1,           i      ; i = i_height - 1
+
+loop_plane_copy_shfl_i:
+
+            MV              srcu,         srcup               ; srcup = srcu
+            MV              srcv,         srcvp               ; srcvp = srcv
+            MV              dst,          dstp                ; dstp  = dst
+            ADD             srcu,         i_srcu,      srcu   ; srcu += i_srcu
+            ADD             srcv,         i_srcv,      srcv   ; srcv += i_srcv
+            ADD             dst,          i_dst,       dst    ; dst  += i_dst
+            MV              loops,        j                   ; j = loops
+
+loop_plane_copy_shfl_j:
+            LDNDW           *srcup++,     srcu_7654:srcu_3210 ; load 8 bytes from srcu
+            LDNDW           *srcvp++,     srcv_7654:srcv_3210 ; load 8 bytes from srcv
+            PACKL4          srcv_3210,    srcu_3210,   dst_2020
+            PACKH4          srcv_3210,    srcu_3210,   dst_3131
+            PACKL4          dst_3131,     dst_2020,    dst_1100
+            PACKH4          dst_3131,     dst_2020,    dst_3322
+            PACKL4          srcv_7654,    srcu_7654,   dst_6464
+            PACKH4          srcv_7654,    srcu_7654,   dst_7575
+            PACKL4          dst_7575,     dst_6464,    dst_5544
+            PACKH4          dst_7575,     dst_6464,    dst_7766
+            STNDW           dst_3322:dst_1100, *dstp++     ; store lower 8 bytes to dst
+            STNDW           dst_7766:dst_5544, *dstp++     ; store upper 8 bytes to dst
+   [j]      BDEC            loop_plane_copy_shfl_j,  j
+
+   [i]      BDEC            loop_plane_copy_shfl_i,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* x264_plane_copy_deinterleave_ti -- copy plane data with deinterleaved    *;
+;* NOTE: this function suppose i_width be multiple of 8                     *;
+;* ======================================================================== *;
+		.sect ".text:_x264_plane_copy_deinterleave_ti"
+        .global _x264_plane_copy_deinterleave_ti
+_x264_plane_copy_deinterleave_ti .cproc dstu, i_dstu, dstv, i_dstv, src, i_src, i_width, i_height
+            .no_mdep
+
+            .reg            src_7766:src_5544
+            .reg            src_3322:src_1100
+            .reg            dstu_7654:dstu_3210
+            .reg            dstv_7654:dstv_3210
+            .reg            srcp, dstup, dstvp
+            .reg            i, j, loops
+
+            SHR             i_width,      3,           loops
+            SUB             loops,        1,           loops  ; loops = (i_width >> 3) - 1
+            SUB             i_height,     1,           i      ; i = i_height - 1
+
+loop_plane_copy_deal_i:
+
+            MV              src,          srcp                ; srcp  = src
+            MV              dstu,         dstup               ; dstup = dstu
+            MV              dstv,         dstvp               ; dstvp = dstv
+            ADD             src,          i_src,       src    ; src  += i_src
+            ADD             dstu,         i_dstu,      dstu   ; dstu += i_dstu
+            ADD             dstv,         i_dstv,      dstv   ; dstv += i_dstv
+            MV              loops,        j                   ; j = loops
+
+loop_plane_copy_deal_j:
+            LDNDW           *srcp++,      src_3322:src_1100   ; load lower 8 bytes from src
+            LDNDW           *srcp++,      src_7766:src_5544   ; load upper 8 bytes from src
+            PACKL4          src_3322,     src_1100,    dstu_3210
+            PACKH4          src_3322,     src_1100,    dstv_3210
+            PACKL4          src_7766,     src_5544,    dstu_7654
+            PACKH4          src_7766,     src_5544,    dstv_7654
+            STNDW           dstu_7654:dstu_3210, *dstup++     ; store 8 bytes to dstu
+            STNDW           dstv_7654:dstv_3210, *dstvp++     ; store 8 bytes to dstv
+   [j]      BDEC            loop_plane_copy_deal_j,  j
+
+   [i]      BDEC            loop_plane_copy_deal_i,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* store_interleave_chroma_ti -- store chroma data with interleaved         *;
+;* NOTE: this function suppose i_height be 8/16                             *;
+;* ======================================================================== *;
+		.sect ".text:_store_interleave_chroma_ti"
+        .global _store_interleave_chroma_ti
+_store_interleave_chroma_ti .cproc dst, i_dst, srcu, srcv, i_height
+            .no_mdep
+
+            .reg            srcu_7654:srcu_3210
+            .reg            srcv_7654:srcv_3210
+            .reg            dst_7766:dst_5544
+            .reg            dst_3322:dst_1100
+            .reg            dst_2020, dst_3131
+            .reg            dst_6464, dst_7575
+            .reg            src_8x, dst_8x, i
+
+            MVK             4,            src_8x              ; src_8x = 4 (FDEC_STRIDE / 8)
+            SHR             i_dst,        3,           dst_8x ; dst_8x = i_dst >> 3
+            SUB             i_height,     1,           i      ; i = i_height - 1
+
+loop_store_shfl: .trip      8,            16,          8      ; loop count
+            LDNDW           *srcu++[src_8x], srcu_7654:srcu_3210 ; load 8 bytes from srcu
+            LDNDW           *srcv++[src_8x], srcv_7654:srcv_3210 ; load 8 bytes from srcv
+            PACKL4          srcv_3210,    srcu_3210,   dst_2020
+            PACKH4          srcv_3210,    srcu_3210,   dst_3131
+            PACKL4          dst_3131,     dst_2020,    dst_1100
+            PACKH4          dst_3131,     dst_2020,    dst_3322
+            PACKL4          srcv_7654,    srcu_7654,   dst_6464
+            PACKH4          srcv_7654,    srcu_7654,   dst_7575
+            PACKL4          dst_7575,     dst_6464,    dst_5544
+            PACKH4          dst_7575,     dst_6464,    dst_7766
+            STNDW           dst_7766:dst_5544, *+dst[1]          ; store upper 8 bytes to dst
+            STNDW           dst_3322:dst_1100, *dst++[dst_8x]    ; store lower 8 bytes to dst
+   [i]      BDEC            loop_store_shfl,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* load_deinterleave_chroma_fenc_ti -- load chroma data with deinterleaved  *;
+;* NOTE: this function suppose i_height be 8/16                             *;
+;* ======================================================================== *;
+		.sect ".text:_load_deinterleave_chroma_fenc_ti"
+        .global _load_deinterleave_chroma_fenc_ti
+_load_deinterleave_chroma_fenc_ti .cproc dst, src, i_src, i_height
+            .no_mdep
+
+            .reg            src_7766:src_5544
+            .reg            src_3322:src_1100
+            .reg            dstu_7654:dstu_3210
+            .reg            dstv_7654:dstv_3210
+            .reg            src_8x, dst_8x, i
+
+            SHR             i_src,        3,           src_8x ; src_8x = i_src >> 3
+            MVK             2,            dst_8x              ; dst_8x = 2 (FENC_STRIDE / 8)
+            SUB             i_height,     1,           i      ; i = i_height - 1
+
+loop_load_deal_fenc: .trip  8,            16,          8      ; loop count
+            LDNDW           *+src[1],       src_7766:src_5544   ; load upper 8 bytes from src
+            LDNDW           *src++[src_8x], src_3322:src_1100   ; load lower 8 bytes from src
+            PACKL4          src_3322,     src_1100,    dstu_3210
+            PACKH4          src_3322,     src_1100,    dstv_3210
+            PACKL4          src_7766,     src_5544,    dstu_7654
+            PACKH4          src_7766,     src_5544,    dstv_7654
+            STNDW           dstv_7654:dstv_3210, *+dst[1]       ; store 8 bytes to dstv: dst+FENC_STRIDE/2
+            STNDW           dstu_7654:dstu_3210, *dst++[dst_8x] ; store 8 bytes to dstu: dst
+   [i]      BDEC            loop_load_deal_fenc,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* load_deinterleave_chroma_fdec_ti -- load chroma data with deinterleaved  *;
+;* NOTE: this function suppose i_height be 8/16                             *;
+;* ======================================================================== *;
+		.sect ".text:_load_deinterleave_chroma_fdec_ti"
+        .global _load_deinterleave_chroma_fdec_ti
+_load_deinterleave_chroma_fdec_ti .cproc dst, src, i_src, i_height
+            .no_mdep
+
+            .reg            src_7766:src_5544
+            .reg            src_3322:src_1100
+            .reg            dstu_7654:dstu_3210
+            .reg            dstv_7654:dstv_3210
+            .reg            src_8x, dst_8x, i
+
+            SHR             i_src,        3,           src_8x ; src_8x = i_src >> 3
+            MVK             4,            dst_8x              ; dst_8x = 4 (FDEC_STRIDE / 8)
+            SUB             i_height,     1,           i      ; i = i_height - 1
+
+loop_load_deal_fdec: .trip  8,            16,          8      ; loop count
+            LDNDW           *+src[1],       src_7766:src_5544   ; load upper 8 bytes from src
+            LDNDW           *src++[src_8x], src_3322:src_1100   ; load lower 8 bytes from src
+            PACKL4          src_3322,     src_1100,    dstu_3210
+            PACKH4          src_3322,     src_1100,    dstv_3210
+            PACKL4          src_7766,     src_5544,    dstu_7654
+            PACKH4          src_7766,     src_5544,    dstv_7654
+            STNDW           dstv_7654:dstv_3210, *+dst[2]       ; store 8 bytes to dstv: dst+FDEC_STRIDE/2
+            STNDW           dstu_7654:dstu_3210, *dst++[dst_8x] ; store 8 bytes to dstu: dst
+   [i]      BDEC            loop_load_deal_fdec,  i
+
+            .return
+            .endproc
+
+;* ======================================================================== *;
+;* frame_init_lowres_core_ti -- init low-res frame                          *;
+;* NOTE: this function suppose i_height be mulitple of 2 and                *;
+;*       i_width be multiple of 8                                           *;
+;*       the inner loop calcualtes 2 lines with 8 bytes of each line.       *;
+;* ======================================================================== *;
+		.sect ".text:_frame_init_lowres_core_ti"
+        .global _frame_init_lowres_core_ti
+_frame_init_lowres_core_ti .cproc src0, dst0, dsth, dstv, dstc, i_src, i_dst, i_width, i_height
+            .no_mdep
+
+            .reg            src_0_3210, src_0_BA98:src_0_7654, src_0_JIHG:src_0_FEDC
+            .reg            src_1_3210, src_1_BA98:src_1_7654, src_1_JIHG:src_1_FEDC
+            .reg            src_2_3210, src_2_BA98:src_2_7654, src_2_JIHG:src_2_FEDC
+            .reg            avg_3210, avg_7654, avg_BA98, avg_FEDC, avg_JIHG
+            .reg            avg_4321, avg_8765, avg_CBA9, avg_GFED
+            .reg            avg_8642, avg_7531, avg_6420
+            .reg            avg_GECA, avg_FDB9, avg_ECA8
+            .reg            dst0_7654:dst0_3210
+            .reg            dsth_7654:dsth_3210
+            .reg            dstv_7654:dstv_3210
+            .reg            dstc_7654:dstc_3210
+            .reg            src0p, src1p, src2p, src1, src2
+            .reg            dst0p, dsthp, dstvp, dstcp
+            .reg            src_acc, dst_acc, src_2y
+            .reg            i, j, loops
+
+            ZERO            src_acc
+            ZERO            dst_acc
+            ADD             src0,         i_src,       src1   ; src1  = src0 + i_src
+            ADD             src1,         i_src,       src2   ; src2  = src1 + i_src
+            SHL             i_src,        1,           src_2y ; src_2y = i_src << 1
+            SHR             i_width,      3,           loops
+            SUB             loops,        1,           loops  ; loops = (i_width >> 3) - 1
+            SUB             i_height,     1,           i      ; i = i_height - 1
+
+loop_init_lowres_i:
+            ADD             src0,         src_acc,     src0p   ; src0p = src0 + src_acc
+            ADD             src1,         src_acc,     src1p   ; src1p = src1 + src_acc
+            ADD             src2,         src_acc,     src2p   ; src2p = src2 + src_acc
+            ADD             dst0,         dst_acc,     dst0p   ; dst0p = dst0 + dst_acc
+            ADD             dsth,         dst_acc,     dsthp   ; dsthp = dsth + dst_acc
+            ADD             dstv,         dst_acc,     dstvp   ; dstvp = dstv + dst_acc
+            ADD             dstc,         dst_acc,     dstcp   ; dstcp = dstc + dst_acc
+            LDNW            *src0p++,     src_0_3210           ; load first 4 bytes of src line 1
+            LDNW            *src1p++,     src_1_3210           ; load first 4 bytes of src line 2
+            LDNW            *src2p++,     src_2_3210           ; load first 4 bytes of src line 3
+            ADD             src_acc,      src_2y,      src_acc ; src_acc += src_2y
+            ADD             dst_acc,      i_dst,       dst_acc ; dst_acc += i_dst
+            MV              loops,        j                    ; j = loops
+
+loop_init_lowres_j:
+            ; load 16 bytes of 3 src lines
+            LDNDW           *src0p++,     src_0_BA98:src_0_7654
+            LDNDW           *src1p++,     src_1_BA98:src_1_7654
+            LDNDW           *src2p++,     src_2_BA98:src_2_7654
+            LDNDW           *src0p++,     src_0_JIHG:src_0_FEDC
+            LDNDW           *src1p++,     src_1_JIHG:src_1_FEDC
+            LDNDW           *src2p++,     src_2_JIHG:src_2_FEDC
+            ; calculate dst0 = avg(src0[2*x], src1[2*x], src0[2*x+1], src1[2*x+1])
+            AVGU4           src_0_3210,   src_1_3210,  avg_3210
+            AVGU4           src_0_7654,   src_1_7654,  avg_7654
+            AVGU4           src_0_BA98,   src_1_BA98,  avg_BA98
+            AVGU4           src_0_FEDC,   src_1_FEDC,  avg_FEDC
+            AVGU4           src_0_JIHG,   src_1_JIHG,  avg_JIHG
+            PACKH4          avg_7654,     avg_3210,    avg_7531
+            PACKL4          avg_7654,     avg_3210,    avg_6420
+            PACKH4          avg_FEDC,     avg_BA98,    avg_FDB9
+            PACKL4          avg_FEDC,     avg_BA98,    avg_ECA8
+            AVGU4           avg_7531,     avg_6420,    dst0_3210
+            AVGU4           avg_FDB9,     avg_ECA8,    dst0_7654
+            ; calculate dsth = avg(src0[2*x+1], src1[2*x+1], src0[2*x+2], src1[2*x+2])
+            SHRMB           avg_7654,     avg_3210,    avg_4321
+            SHRMB           avg_BA98,     avg_7654,    avg_8765
+            SHRMB           avg_FEDC,     avg_BA98,    avg_CBA9
+            SHRMB           avg_JIHG,     avg_FEDC,    avg_GFED
+            PACKH4          avg_8765,     avg_4321,    avg_8642
+            PACKL4          avg_8765,     avg_4321,    avg_7531
+            PACKH4          avg_GFED,     avg_CBA9,    avg_GECA
+            PACKL4          avg_GFED,     avg_CBA9,    avg_FDB9
+            AVGU4           avg_8642,     avg_7531,    dsth_3210
+            AVGU4           avg_GECA,     avg_FDB9,    dsth_7654
+            ; calculate dstv = avg(src1[2*x], src2[2*x], src1[2*x+1], src2[2*x+1])
+            AVGU4           src_1_3210,   src_2_3210,  avg_3210
+            AVGU4           src_1_7654,   src_2_7654,  avg_7654
+            AVGU4           src_1_BA98,   src_2_BA98,  avg_BA98
+            AVGU4           src_1_FEDC,   src_2_FEDC,  avg_FEDC
+            AVGU4           src_1_JIHG,   src_2_JIHG,  avg_JIHG
+            PACKH4          avg_7654,     avg_3210,    avg_7531
+            PACKL4          avg_7654,     avg_3210,    avg_6420
+            PACKH4          avg_FEDC,     avg_BA98,    avg_FDB9
+            PACKL4          avg_FEDC,     avg_BA98,    avg_ECA8
+            AVGU4           avg_7531,     avg_6420,    dstv_3210
+            AVGU4           avg_FDB9,     avg_ECA8,    dstv_7654
+            ; calculate dstc = avg(src1[2*x+1], src2[2*x+1], src1[2*x+2], src2[2*x+2])
+            SHRMB           avg_7654,     avg_3210,    avg_4321
+            SHRMB           avg_BA98,     avg_7654,    avg_8765
+            SHRMB           avg_FEDC,     avg_BA98,    avg_CBA9
+            SHRMB           avg_JIHG,     avg_FEDC,    avg_GFED
+            PACKH4          avg_8765,     avg_4321,    avg_8642
+            PACKL4          avg_8765,     avg_4321,    avg_7531
+            PACKH4          avg_GFED,     avg_CBA9,    avg_GECA
+            PACKL4          avg_GFED,     avg_CBA9,    avg_FDB9
+            AVGU4           avg_8642,     avg_7531,    dstc_3210
+            AVGU4           avg_GECA,     avg_FDB9,    dstc_7654
+            ; store dst0, dsth, dstv, dstc
+            STNDW           dst0_7654:dst0_3210, *dst0p++
+            STNDW           dsth_7654:dsth_3210, *dsthp++
+            STNDW           dstv_7654:dstv_3210, *dstvp++
+            STNDW           dstc_7654:dstc_3210, *dstcp++
+            ; move data for next time
+            MV              src_0_JIHG,   src_0_3210
+            MV              src_1_JIHG,   src_1_3210
+            MV              src_2_JIHG,   src_2_3210
+   [j]      BDEC            loop_init_lowres_j,  j
+
+   [i]      BDEC            loop_init_lowres_i,  i
+
+            .return
+            .endproc
